@@ -1,0 +1,21 @@
+name: Feature request
+description: Something bang.nvim should do, or do differently
+labels: [enhancement]
+body:
+  - type: textarea
+    id: task
+    attributes:
+      label: What are you trying to do?
+      description: The editing task, not the solution. What text, what command, what should end up in the buffer.
+    validations:
+      required: true
+  - type: textarea
+    id: today
+    attributes:
+      label: How do you do it today?
+      description: The built-in `!`, another plugin, a mapping, or not at all.
+  - type: textarea
+    id: proposal
+    attributes:
+      label: Proposal
+      description: Optional. How you imagine it working, including `.` repeat, history and what happens when the command fails.

@@ -1,0 +1,57 @@
+name: Bug report
+description: bang.nvim wrote the wrong text, refused a region, or raised an error
+labels: [bug]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Before filing, run the same command through the built-in `!` on the same
+        text. If it misbehaves there too, the cause is the shell or the command,
+        not the plugin. Text beats screenshots everywhere below.
+  - type: textarea
+    id: repro
+    attributes:
+      label: Steps to reproduce
+      description: |
+        Start from `nvim --clean`, then `:set rtp+=/path/to/bang.nvim | runtime plugin/bang.lua`.
+        Give the buffer text, how you selected the region, and the exact keys or command.
+      placeholder: |
+        1. Buffer: hunter2
+        2. viw
+        3. g! then type: base64
+    validations:
+      required: true
+  - type: textarea
+    id: expected
+    attributes:
+      label: Expected buffer afterwards
+    validations:
+      required: true
+  - type: textarea
+    id: actual
+    attributes:
+      label: Actual buffer afterwards, and any message shown
+    validations:
+      required: true
+  - type: input
+    id: nvim
+    attributes:
+      label: Neovim version
+      description: First line of `nvim --version`.
+      placeholder: NVIM v0.11.0
+    validations:
+      required: true
+  - type: input
+    id: shell
+    attributes:
+      label: Shell and operating system
+      description: Output of `:set shell? shellcmdflag?` plus the OS.
+      placeholder: shell=/bin/zsh shellcmdflag=-c, macOS 15
+    validations:
+      required: true
+  - type: textarea
+    id: config
+    attributes:
+      label: Configuration
+      description: Your `vim.g.bang` or `setup()` table, if you have one.
+      render: lua
