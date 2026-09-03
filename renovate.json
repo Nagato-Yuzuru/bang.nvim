@@ -1,6 +1,10 @@
 {
   "$schema": "https://docs.renovatebot.com/renovate-schema.json",
   "extends": ["config:best-practices"],
+  "description": [
+    "config:recommended ignores **/tests/**; the mini.nvim pin lives in tests/minimal_init.lua, so nothing is ignored here."
+  ],
+  "ignorePaths": [],
   "customManagers": [
     {
       "customType": "regex",
