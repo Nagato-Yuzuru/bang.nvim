@@ -4,7 +4,7 @@ actionlint = "1.7.12"
 "aqua:Kampfkarren/selene" = { version = "0.31.0", os = ["linux", "windows"] }
 "cargo:selene" = { version = "0.31.0", os = ["macos"] }
 dprint = "0.57.0"
-prek = "0.5.1"
+prek = "0.5.2"
 stylua = "2.5.2"
 
 [tasks.test]
