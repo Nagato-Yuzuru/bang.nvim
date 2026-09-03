@@ -348,6 +348,32 @@ T["D7.6 a failing operator run leaves the buffer byte-identical"] = function()
   eq(H.get_lines(child), before)
 end
 
+T["D7.5 gv after a Visual g! reselects the filtered lines"] = function()
+  H.stub_input(child, { "tr a-z A-Z" })
+  H.set_lines(child, { "a", "b", "c", "d" })
+  child.type_keys("gg", "V", "2j", "g!")
+  eq(H.get_lines(child), { "A", "B", "C", "d" })
+  child.type_keys("gv")
+  eq(
+    child.lua_get([[{ vim.fn.mode(), vim.fn.getpos("v")[2], vim.fn.getpos(".")[2] }]]),
+    { "V", 1, 3 }
+  )
+  child.type_keys("<Esc>")
+end
+
+T["D7.5 gv after a blockwise g! reselects the block"] = function()
+  H.stub_input(child, { "sort" })
+  H.set_lines(child, { "1 c", "2 a", "3 b" })
+  child.type_keys("gg", "0", "2l", "<C-v>", "2j", "g!")
+  eq(H.get_lines(child), { "1 a", "2 b", "3 c" })
+  child.type_keys("gv")
+  eq(
+    child.lua_get([[{ vim.fn.mode(), vim.fn.getpos("v"), vim.fn.getpos(".") }]]),
+    { "\22", { 0, 1, 3, 0 }, { 0, 3, 3, 0 } }
+  )
+  child.type_keys("<Esc>")
+end
+
 -- §9.2 History from the operator paths --------------------------------------
 
 T["D9.2 a successful operator run records Bang <cmd>"] = function()

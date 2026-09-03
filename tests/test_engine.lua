@@ -488,6 +488,79 @@ T["D7.5 one undo restores the buffer after a blockwise run"] = function()
   eq(H.get_lines(child), before)
 end
 
+--- The named marks a case sets and the Visual marks, as `getpos()` reports them.
+local function marks()
+  return child.lua_get([[{
+    a = vim.fn.getpos("'a"),
+    b = vim.fn.getpos("'b"),
+    lt = vim.fn.getpos("'<"),
+    gt = vim.fn.getpos("'>"),
+  }]])
+end
+
+T["D7.5 a linewise run keeps marks the way the built-in ! does"] = function()
+  -- The built-in moves marks from the old lines onto the new ones and deletes
+  -- only those on lines the output no longer has ('cpo-R'). Same count and more
+  -- lines map every mark the same way; fewer lines is the boundary where a mark
+  -- inside the region is lost while the ones below still shift.
+  local start = { "b", "a", "c", "d", "e" }
+  local function place_marks()
+    child.cmd("enew!")
+    H.set_lines(child, start)
+    child.type_keys("2G", "ma", "5G", "mb", "gg", "V", "2j", "<Esc>")
+  end
+
+  for _, cmd in ipairs({ "sort", "sed p" }) do
+    place_marks()
+    child.cmd("silent! 1,3!" .. cmd)
+    local builtin = { lines = H.get_lines(child), marks = marks() }
+
+    place_marks()
+    local res = H.run(child, cmd, H.linewise(1, 3))
+    eq(res.ok, true)
+    eq(
+      { lines = H.get_lines(child), marks = marks() },
+      builtin,
+      { fail_reason = "parity with built-in ! for: " .. cmd }
+    )
+  end
+
+  place_marks()
+  child.cmd("silent! 1,3!head -1")
+  local builtin = marks()
+  place_marks()
+  local res = H.run(child, "head -1", H.linewise(1, 3))
+  eq(res.ok, true)
+  eq(H.get_lines(child), { "b", "d", "e" })
+  local bang = marks()
+  eq(bang.a, builtin.a, { fail_reason = "a mark on a line the output dropped must be deleted" })
+  eq(bang.b, builtin.b, { fail_reason = "a mark below the region must shift with it" })
+  eq(bang.lt, builtin.lt)
+  -- `'>` sat on a dropped line. The built-in leaves it on the region's first
+  -- line; here it lands on the first line after the kept text, as after :delete.
+  eq(bang.gt[2], 2)
+end
+
+T["D7.5 a blockwise run keeps every mark and the Visual marks"] = function()
+  H.set_lines(child, { "1 c", "2 a", "3 b", "x" })
+  child.type_keys("2G", "ma", "4G", "mb", "gg", "0", "2l", "<C-v>", "2j", "<Esc>")
+  local before = marks()
+  local res = H.run(child, "sort", H.blockwise(1, 3, 3, 3))
+  eq(res.ok, true)
+  eq(H.get_lines(child), { "1 a", "2 b", "3 c", "x" })
+  eq(marks(), before)
+end
+
+T["D7.5 a one-line run keeps a mark on that line"] = function()
+  -- Boundary: one line replaced by one line.
+  H.set_lines(child, { "one", "two" })
+  child.type_keys("gg", "ma")
+  local res = H.run(child, "tr a-z A-Z", H.linewise(1, 1))
+  eq(res.ok, true)
+  eq(H.get_lines(child), { "ONE", "two" })
+  eq(child.lua_get([[vim.fn.getpos("'a")]]), { 0, 1, 1, 0 })
+end
+
 T["D7.5 no register is touched"] = function()
   H.set_lines(child, { "password: hunter2" })
   child.lua([[
