@@ -132,22 +132,36 @@ end
 ---Run `cmd` with `stdin` on its standard input and wait for it.
 ---A timeout and a Ctrl-C both end as SIGKILL with exit code 124 (D6.2); the
 ---elapsed time is what tells them apart.
+---
+---The command gets its own process group (`detach`) so that a timeout can kill
+---the whole pipeline. `wait()` kills only the shell; a child the shell forked --
+---every pipeline, and on dash even a lone command -- would keep stdout open and
+---hold the result back, so `wait()` returned nil (CI-1).
 ---@param cmd string
 ---@param stdin string
 ---@param timeout integer Milliseconds.
 ---@return bang.ExecResult|nil result, string|nil error
 function M.run(cmd, stdin, timeout)
   local started = vim.uv.hrtime()
-  local ok, result = pcall(function()
-    local opts = { stdin = stdin, text = true, cwd = vim.fn.getcwd() }
-    return vim.system(M.argv(cmd), opts):wait(timeout)
-  end)
+  local ok, proc = pcall(vim.system, M.argv(cmd), {
+    stdin = stdin,
+    text = true,
+    cwd = vim.fn.getcwd(),
+    detach = true,
+  })
+  if not ok then
+    return nil, ("bang: could not run %s: %s"):format(vim.o.shell, proc)
+  end
+
+  local result = proc:wait(timeout)
+  if result == nil then
+    -- The shell is dead, but a child of it still holds the pipes.
+    pcall(vim.uv.kill, -proc.pid, "sigkill")
+    result = proc:wait(timeout)
+  end
   local elapsed = (vim.uv.hrtime() - started) / 1e6
 
-  if not ok then
-    return nil, ("bang: could not run %s: %s"):format(vim.o.shell, result)
-  end
-  if result.code == 124 and result.signal == 9 then
+  if result == nil or (result.code == 124 and result.signal == 9) then
     if elapsed >= timeout * 0.9 then
       return nil, ("bang: command timed out after %d ms, nothing was replaced"):format(timeout)
     end

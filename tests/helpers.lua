@@ -54,6 +54,13 @@ function Helpers.blockwise(start_lnum, start_col, finish_lnum, finish_col)
   return Helpers.region("\22", start_lnum, start_col, finish_lnum, finish_col)
 end
 
+--- What the built-in `!` leaves in the buffer for the output `a\rb\n`: with
+--- 'noshelltemp' (default since 0.12) it reads a pipe and splits on the bare
+--- \r; with 'shelltemp' (0.11 default) a temp file keeps it inside the line.
+function Helpers.builtin_cr_lines(child)
+  return child.o.shelltemp and { "a\rb" } or { "a", "b" }
+end
+
 -- Stubs --------------------------------------------------------------------
 
 --- Capture everything the plugin notifies (DESIGN.md §6.4, §6.5).

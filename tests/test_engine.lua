@@ -832,7 +832,9 @@ T["R10 (D5.4) a blockwise run on an empty buffer leaves it empty"] = function()
 end
 
 T["R11 (DEV-5) a bare carriage return in the output stays inside the line"] = function()
-  -- The built-in `!` splits on a bare \r; bang.nvim splits on \n only.
+  -- bang.nvim splits on \n only. The built-in splits on a bare \r when it reads
+  -- the output through a pipe ('noshelltemp', the default since 0.12) and
+  -- keeps it when it goes through a temp file ('shelltemp', the 0.11 default).
   H.set_lines(child, { "zz" })
   local res = H.run(child, [[printf 'a\rb\n']], H.linewise(1, 1))
   eq(res.ok, true)
@@ -841,7 +843,7 @@ T["R11 (DEV-5) a bare carriage return in the output stays inside the line"] = fu
   child.cmd("enew!")
   H.set_lines(child, { "zz" })
   child.cmd([[silent! %!printf 'a\rb\n']])
-  eq(H.get_lines(child), { "a", "b" }, { fail_reason = "the built-in still splits on \\r" })
+  eq(H.get_lines(child), H.builtin_cr_lines(child), { fail_reason = "the built-in's \\r handling" })
 end
 
 T["R11 (DEV-5) a bare carriage return in the buffer stays inside the line"] = function()
@@ -853,7 +855,7 @@ T["R11 (DEV-5) a bare carriage return in the buffer stays inside the line"] = fu
   child.cmd("enew!")
   H.set_lines(child, { "a\rb" })
   child.cmd("silent! %!cat")
-  eq(H.get_lines(child), { "a", "b" }, { fail_reason = "the built-in still splits on \\r" })
+  eq(H.get_lines(child), H.builtin_cr_lines(child), { fail_reason = "the built-in's \\r handling" })
 end
 
 T["R12 (D6.1) a doubled backslash before % reaches the shell as one backslash"] = function()

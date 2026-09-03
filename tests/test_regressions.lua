@@ -117,4 +117,22 @@ T["builtin_bang_substitution"] = function()
   neq(H.get_lines(child), builtin)
 end
 
+T["timeout_pipeline_leaves_child_holding_pipe"] = function()
+  -- The timeout SIGKILL reaches only the shell. `sleep` and `cat` are its
+  -- children: they kept stdout open, `vim.system():wait()` returned nil and
+  -- run() indexed it. On Ubuntu `sh` is dash, which forks even a lone `sleep`,
+  -- so every timeout test crashed there. The whole process group must die.
+  H.setup(child, { timeout = 200 })
+  H.set_lines(child, { "one" })
+  local res = H.run(child, "sleep 31 | cat", H.linewise(1, 1))
+  eq(res.ok, false)
+  neq(res.msg:lower():find("timed out", 1, true), nil)
+  eq(H.get_lines(child), { "one" })
+  eq(
+    vim.fn.system({ "pgrep", "-f", "sleep 31" }),
+    "",
+    { fail_reason = "the pipeline outlived the timeout" }
+  )
+end
+
 return T
