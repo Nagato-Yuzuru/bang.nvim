@@ -232,6 +232,65 @@ T["differential"]["F2 every entry point matches Vim's own gU on the same selecti
   eq(H.get_lines(child), expected, { fail_reason = label .. ": run() differs from gU" })
 end
 
+-- §3.2 `.` on a block --------------------------------------------------------
+
+T["D3.2 . after a blockwise g! matches Vim's own redo of gU"] = function()
+  -- Vim rebuilds the block at the cursor on a redo. Each case holds the same
+  -- text twice: the second copy is where `.` lands, and gU's own `.` decides
+  -- which cells that covers -- a short far line, `$`, a tab or a wide char on
+  -- the edge are exactly where the marks the opfunc can read stop describing it.
+  local cases = {
+    {
+      { "abcd", "efgh", "", "abcd", "efgh" },
+      { "gg", "0", "l", "<C-v>", "j", "l" },
+      { "4G", "0", "l" },
+    },
+    {
+      { "abcd", "efgh", "", "abcd", "ef" },
+      { "gg", "0", "l", "<C-v>", "j", "2l" },
+      { "4G", "0", "l" },
+    },
+    {
+      { "abcdef", "ab", "", "abcdef", "ab" },
+      { "gg", "0", "l", "<C-v>", "j", "$" },
+      { "4G", "0", "l" },
+    },
+    {
+      { "a\tbcd", "efghij", "", "a\tbcd", "efghij" },
+      { "gg", "0", "fb", "<C-v>", "l", "j" },
+      { "4G", "0", "fb" },
+    },
+    {
+      { "x中文y", "abcde", "", "x中文y", "abcde" },
+      { "gg", "0", "l", "<C-v>", "l", "j" },
+      { "4G", "0", "l" },
+    },
+  }
+  for i, c in ipairs(cases) do
+    local lines, select, target = c[1], c[2], c[3]
+    local entry = { lines = lines, keys = select }
+
+    select_region(entry)
+    child.type_keys("gU")
+    child.type_keys(unpack(target))
+    child.type_keys(".")
+    local expected = H.get_lines(child)
+    neq(expected, lines, { fail_reason = ("case %d: gU changed nothing"):format(i) })
+
+    select_region(entry)
+    H.stub_input(child, { "tr a-z A-Z" })
+    child.type_keys("g!")
+    child.type_keys(unpack(target))
+    child.type_keys(".")
+    eq(H.get_lines(child), expected, {
+      fail_reason = ("case %d: . after g! differs from . after gU (%s)"):format(
+        i,
+        vim.inspect(expected)
+      ),
+    })
+  end
+end
+
 -- §12c F7 virtualedit -------------------------------------------------------
 
 T["F7 a virtualedit block with an anchor past the end of a line matches gU"] = function()
