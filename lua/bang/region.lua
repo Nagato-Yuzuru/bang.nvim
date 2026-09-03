@@ -317,15 +317,38 @@ local function write_charwise(buf, resolved, lines)
   return end_lnum, math.max(0, end_col - 1)
 end
 
+---Replace lines `first..last` (1-based, inclusive) with `lines`, keeping marks
+---the way the built-in filter does ('cpo-R'): a mark stays on its line while
+---that line exists, marks below shift with the line count, and only marks on
+---lines the output no longer has are deleted. `nvim_buf_set_lines` would drop
+---every mark in the range and pull `'<`/`'>` to its first line.
+---@param buf integer
+---@param first integer
+---@param last integer
+---@param lines string[]
+local function replace_lines(buf, first, last, lines)
+  local old, new = last - first + 1, #lines
+  local kept = math.min(old, new)
+  local failed = kept > 0 and fn.setbufline(buf, first, vim.list_slice(lines, 1, kept)) ~= 0
+  if not failed and new > old then
+    failed = fn.appendbufline(buf, last, vim.list_slice(lines, kept + 1)) ~= 0
+  elseif not failed and new < old then
+    failed = fn.deletebufline(buf, first + kept, last) ~= 0
+  end
+  if failed then
+    error(("could not replace lines %d-%d"):format(first, last), 0)
+  end
+end
+
 ---@param buf integer
 ---@param resolved bang.Resolved
 ---@param lines string[]
 ---@return integer lnum, integer col
 local function write_linewise(buf, resolved, lines)
-  local first = resolved.segments[1].lnum - 1
+  local first = resolved.segments[1].lnum
   local last = resolved.segments[#resolved.segments].lnum
-  api.nvim_buf_set_lines(buf, first, last, false, lines)
-  return math.max(0, first + math.max(#lines, 1) - 1), 0
+  replace_lines(buf, first, last, lines)
+  return math.max(0, first - 1 + math.max(#lines, 1) - 1), 0
 end
 
 ---@param buf integer
@@ -366,7 +389,7 @@ local function write_blockwise(buf, resolved, lines)
   end
   -- One write for the whole block: a failure part way through the rows must not
   -- leave the buffer half filtered (F9, D7.6).
-  api.nvim_buf_set_lines(buf, segments[1].lnum - 1, segments[#segments].lnum, false, rewritten)
+  replace_lines(buf, segments[1].lnum, segments[#segments].lnum, rewritten)
   return segments[#segments].lnum - 1, math.max(0, end_col - 1)
 end
 
