@@ -1,0 +1,220 @@
+*bang.txt*  Pipe a selection, motion, or text object through a shell command
+
+==============================================================================
+CONTENTS                                                       *bang-contents*
+
+  1. Introduction ............................................. |bang.nvim|
+  2. Requirements ..................................... |bang-requirements|
+  3. Usage ................................................... |bang-usage|
+  4. Configuration .......................................... |bang-config|
+  5. Lua API ................................................... |bang-api|
+  6. Differences from ! ................................ |bang-differences|
+
+==============================================================================
+1. INTRODUCTION                                                    *bang.nvim*
+
+bang.nvim filters a motion, a text object or a Visual selection through a
+shell command and replaces it with the command's output. Charwise, linewise
+and blockwise regions all work.
+
+Everything else follows |:range!|, except that a failing command leaves the
+buffer alone. |bang-differences| has the full list.
+
+==============================================================================
+2. REQUIREMENTS                                            *bang-requirements*
+
+Neovim 0.11 or newer. |getregionpos()| resolves the region and the
+"shellcmdline" |:command-completion| type completes the command line; both
+first appear in 0.11. On anything older the plugin registers nothing and
+warns once.
+
+==============================================================================
+3. USAGE                                                          *bang-usage*
+
+                                                                          *g!*
+g!{motion}              Prompt with "!" and filter the text {motion} covers
+                        through the shell command you type. The granularity
+                        of the motion is kept: a charwise motion filters
+                        charwise, a linewise motion whole lines.
+
+                                                                         *g!!*
+[count]g!!              Filter the current line, or [count] lines.
+
+                                                                        *v_g!*
+{Visual}g!              Filter the Visual selection, charwise, linewise or
+                        blockwise as it was made. A blockwise selection made
+                        with "$" filters to the end of every line it covers.
+
+.                       Repeat the last operator run: same motion, same
+                        command, no prompt. A |:Bang| in between does not
+                        change what "." repeats.
+
+Cancelling the prompt with <Esc>, or entering an empty command, writes
+nothing, records nothing, and leaves "." alone. The prompt completes shell
+commands and their file arguments.
+
+                                                                       *:Bang*
+:[range]Bang {cmd}      Filter the lines of [range] through {cmd}. Without a
+                        range, the current line.
+
+:'<,'>Bang {cmd}        Typed from a charwise or blockwise Visual selection,
+                        filters the selection itself rather than its lines.
+                        Every other range is linewise, as |:range!| is.
+
+:[range]Bang! {cmd}     Write the output even when the command fails: stdout
+                        followed by stderr, whatever the exit code, for that
+                        call only. This is what "diff" (exit 1 when the
+                        inputs differ) and "grep" (exit 1 on no match) need.
+
+:[range]Bang            With no command, open |vim.ui.select()| over the
+                        history and run the command you pick on the region
+                        this :Bang named.
+
+HISTORY                                                         *bang-history*
+
+The ":" command-line history is the store; the plugin keeps no history file
+of its own. A successful run records "Bang {cmd}", or "'<,'>Bang {cmd}" when
+it ran on a Visual selection, so |q:| lists past filters, |@:| replays the
+last one over the same selection, and 'shada' persists them. Failed runs and
+cancelled prompts record nothing.
+
+==============================================================================
+4. CONFIGURATION                                                 *bang-config*
+
+Options live in the dictionary |g:bang|. require("bang").setup() merges into
+it, see |bang.setup()|. Both are optional; the plugin works with neither.
+
+                                                                      *g:bang*
+>lua
+    vim.g.bang = {
+      on_error = "keep",   -- "keep": a failing command leaves the buffer
+                           -- alone. "replace": write stdout and stderr
+                           -- anyway, like the built-in filter.
+      timeout = 30000,     -- Milliseconds before the command is killed.
+      keymaps = true,      -- Create g!, g!! and Visual g!.
+      expand_bang = false, -- Replace every unescaped "!" in the command
+                           -- with the previous command, as the built-in
+                           -- filter does.
+    }
+<
+"on_error", "timeout" and "expand_bang" are read on every run. "keymaps" is
+read when the plugin loads, and again in |bang.setup()|. An unknown key or an
+invalid value is reported by name.
+
+MAPPINGS
+
+                                                       *<Plug>(bang-operator)*
+                                                           *<Plug>(bang-line)*
+The default keys are wrappers over two <Plug> mappings:
+>lua
+    vim.keymap.set({ "n", "x" }, "g!", "<Plug>(bang-operator)")
+    vim.keymap.set("n", "g!!", "<Plug>(bang-line)")
+<
+A key that already has a global mapping is never taken over. For your own
+keys, switch the defaults off and map the <Plug> names:
+>lua
+    require("bang").setup({ keymaps = false })
+    vim.keymap.set({ "n", "x" }, "<Leader>!", "<Plug>(bang-operator)")
+    vim.keymap.set("n", "<Leader>!!", "<Plug>(bang-line)")
+<
+keymaps = false at load time creates nothing; in |bang.setup()| it also
+deletes the default keys, but only while they are still the plugin's own.
+
+==============================================================================
+5. LUA API                                                          *bang-api*
+
+                                                                  *bang.run()*
+require("bang").run({cmd}, {region}, {opts})
+
+    Filter {region} through {cmd} and replace it with the output. This is the
+    engine behind every entry point. It expands "%" and friends, runs {cmd}
+    through 'shell', writes the output back, and notifies the user itself.
+
+    It never raises for a runtime condition. A gone or 'nomodifiable' buffer,
+    an invalid |g:bang| and a failing command are all reported through the
+    return values. Only |bang.setup()| raises.
+
+    Parameters: ~
+      • {cmd}     (string) Shell command line.
+      • {region}  (table) The text to filter.
+                  • type: "v" charwise, "V" linewise, "\22" blockwise.
+                  • start: 1-based line and byte column.
+                  • finish: inclusive end; a column of |v:maxcol| means the
+                    end of the line.
+                  Named fields ({ lnum = 1, col = 11 }) and a positional
+                  pair ({ 1, 11 }) are both accepted.
+      • {opts}    (table|nil) Options.
+                  • bang: write the output even when the command fails.
+                    Default false.
+                  • buf: buffer to act on. 0 or nil is the current buffer.
+
+    Return: ~
+        (boolean) Whether the buffer was written, and (string|nil) the
+        message that was shown when it was not.
+
+                                                              *bang.history()*
+require("bang").history()
+
+    Every command run through |:Bang|, newest first, without duplicates,
+    read out of the ":" history.
+
+    Return: ~
+        (string[])
+
+                                                                *bang.setup()*
+require("bang").setup({opts})
+
+    Merge {opts} into |g:bang| and apply "keymaps". Optional: the plugin
+    registers everything when it loads. Raises on an unknown key or an
+    invalid value.
+
+==============================================================================
+6. DIFFERENCES FROM !                                       *bang-differences*
+
+bang.nvim behaves like |:range!| except in the places listed here.
+
+The "!" in the command ~
+        The built-in filter replaces every unescaped "!" in the command with
+        the previous command, inside quotes as well: after ":%!echo first",
+        ":%!echo 'x!y'" writes "xecho firsty". bang.nvim leaves "!"
+        literal; expand_bang = true reproduces the substitution exactly.
+
+Visual range ~
+        ":'<,'>!" is a line range. ":'<,'>Bang" typed from a charwise or
+        blockwise Visual selection acts on the selection.
+
+Failure ~
+        A non-zero exit still overwrites the region with stdout and stderr.
+        bang.nvim leaves the buffer alone and shows the message;
+        on_error = "replace", or ":Bang!", restores the built-in behaviour.
+
+Output order ~
+        The built-in interleaves stdout and stderr as produced. In replace
+        mode bang.nvim writes stdout first and stderr after it: the two are
+        captured separately.
+
+Line breaks ~
+        The built-in splits a line on a bare <CR>. bang.nvim splits on <NL>
+        only; a bare <CR> stays inside the line.
+
+Known gaps ~
+        • "%", "#", "##", "#<n>", "<cword>", "<cWORD>", "<cfile>" and
+          "<cexpr>" expand, with the ":p :h :t :r :e :8 :~ :. :S"
+          modifiers. The substitute modifier "%:s?pat?sub?" (and ":gs?")
+          is not parsed; the item is left as typed.
+        • "<afile>", "<abuf>", "<amatch>", "<sfile>", "<slnum>", "<stack>",
+          "<script>" and "<SID>" reach the shell as typed: they only mean
+          something inside an autocommand or a sourced script.
+        • A 'virtualedit' block whose anchor is past the end of a line
+          that has a <Tab> before the anchor is filtered inexactly, because
+          the column is recovered as "col + off", which mixes byte and cell
+          counts; tab-free past-end-of-line blocks are exact.
+        • ":Bang" tells "the last Visual selection" from "these lines" using
+          the range, the mode of that selection and the typed command line.
+          An invocation that was not typed, from a mapping, <Cmd> or
+          vim.cmd(), whose numeric range happens to be exactly the lines of
+          the last Visual selection is read as that selection; a mapping
+          that needs certainty should call |bang.run()|.
+
+==============================================================================
+vim:tw=78:ts=8:ft=help:norl:
