@@ -1,0 +1,26 @@
+# Style-only fixes land as a commit on the pull request instead of a red check.
+# The job name and workflow name are what autofix.ci identifies the run by.
+name: autofix.ci
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+
+jobs:
+  autofix:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: jdx/mise-action@c2a87611a18de5b3828c5652fe268e992400cb5c # v4.3.0
+      - name: Run the fixers
+        # Fixers exit 1 when they change a file; the next step turns that into a commit.
+        run: mise run lint
+        continue-on-error: true
+      - uses: autofix-ci/action@c5b2d67aa2274e7b5a18224e8171550871fc7e4a # v1.3.4
+        with:
+          commit-message: "style: apply automatic fixes"

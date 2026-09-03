@@ -1,0 +1,15 @@
+{
+  "$schema": "https://docs.renovatebot.com/renovate-schema.json",
+  "extends": ["config:best-practices"],
+  "customManagers": [
+    {
+      "customType": "regex",
+      "description": "mini.nvim tag pinned by the test bootstrap",
+      "managerFilePatterns": ["/^tests/minimal_init\\.lua$/"],
+      "matchStrings": [
+        "-- renovate: datasource=(?<datasource>[a-z-]+) depName=(?<depName>\\S+)\\s+local mini_rev = \"(?<currentValue>[^\"]+)\""
+      ],
+      "versioningTemplate": "semver"
+    }
+  ]
+}

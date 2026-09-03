@@ -1,0 +1,15 @@
+# yaml-language-server: $schema=https://coderabbit.ai/integrations/schema.v2.json
+language: en-US
+reviews:
+  profile: chill
+  poem: false
+  path_instructions:
+    - path: "tests/**"
+      instructions: >-
+        Tests drive the plugin only through its public contract: require("bang"), the <Plug>
+        mappings, :Bang and vim.g.bang, always from a child Neovim. Flag any test that names an
+        internal module.
+  tools:
+    # selene is this repo's Lua linter; luacheck would only add noise about the vim global.
+    luacheck:
+      enabled: false
