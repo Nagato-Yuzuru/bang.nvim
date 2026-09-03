@@ -162,7 +162,8 @@ local function prompt(buf, region, visual)
     -- running it a second time (F5).
     repeat_cmd = expanded or repeat_cmd
     if ok then
-      -- The Visual marks are still set, so `@:` replays the same region (D9.2).
+      -- With the Visual range, so that running the entry again from `q:` acts
+      -- on the selection (D9.2).
       history.record((visual and "'<,'>Bang " or "Bang ") .. input)
     end
   end)

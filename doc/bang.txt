@@ -74,9 +74,10 @@ HISTORY                                                         *bang-history*
 
 The ":" command-line history is the store; the plugin keeps no history file
 of its own. A successful run records "Bang {cmd}", or "'<,'>Bang {cmd}" when
-it ran on a Visual selection, so |q:| lists past filters, |@:| replays the
-last one over the same selection, and 'shada' persists them. Failed runs and
-cancelled prompts record nothing.
+it ran on a Visual selection, so |q:| lists past filters, the |:Bang| picker
+offers them, and 'shada' persists them. |@:| repeats the last command line
+you typed: it replays a typed :Bang, not a run made with g!, which |.|
+repeats. Failed runs and cancelled prompts record nothing.
 
 ==============================================================================
 4. CONFIGURATION                                                 *bang-config*
