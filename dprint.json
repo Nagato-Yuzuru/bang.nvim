@@ -1,0 +1,23 @@
+{
+  "$schema": "https://dprint.dev/schemas/v0.json",
+  "lineWidth": 100,
+  "indentWidth": 2,
+  "json": {},
+  "markdown": {
+    "textWrap": "maintain",
+    "emphasisKind": "asterisks",
+    "table.cellPadding": "space"
+  },
+  "toml": {},
+  "yaml": {},
+  "excludes": [
+    ".deps/**",
+    "doc/**"
+  ],
+  "plugins": [
+    "https://plugins.dprint.dev/json-0.23.0.wasm@3e1f1b7c1427df6bd8981a11aaa2c466fde8d1115e9dde4c652130458539443c",
+    "https://plugins.dprint.dev/markdown-0.23.2.wasm@bb58fb69b48b4f03ba238844664ea11011a62469f146c6f140a94aa2219b3259",
+    "https://plugins.dprint.dev/toml-0.8.0.wasm@69cb40cba5e8a53560ccea7fdced073a55d04eb05492f0d9b877f916b976945d",
+    "https://plugins.dprint.dev/g-plane/pretty_yaml-v0.6.0.wasm@40a2fdda7040317eb1b23520f3a00769a5571eedb049c4ca9175c1b9eeba01ae"
+  ]
+}

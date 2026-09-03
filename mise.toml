@@ -1,0 +1,24 @@
+[tools]
+actionlint = "1.7.12"
+# selene ships an arm64-only macOS binary; on macOS mise builds it with cargo instead.
+"aqua:Kampfkarren/selene" = { version = "0.31.0", os = ["linux", "windows"] }
+"cargo:selene" = { version = "0.31.0", os = ["macos"] }
+dprint = "0.57.0"
+prek = "0.5.1"
+stylua = "2.5.2"
+
+[tasks.test]
+description = "Run the mini.test suite headless (exit 1 on any failure)"
+run = "nvim --headless --noplugin -u tests/minimal_init.lua -c 'lua MiniTest.run()'"
+
+[tasks.docs]
+description = "Regenerate doc/tags and fail on duplicate or malformed help tags"
+run = '''nvim --headless --clean -c 'lua local ok, err = pcall(vim.cmd.helptags, "doc"); if not ok then io.stderr:write(err .. "\n"); os.exit(1) end' -c qa!'''
+
+[tasks.lint]
+description = "Run every fast check (formatters fix in place; exits 1 if anything changed or failed)"
+run = "prek run --all-files --show-diff-on-failure"
+
+[tasks.check]
+depends = ["lint", "docs", "test"]
+description = "Everything CI runs: lint, docs, test"

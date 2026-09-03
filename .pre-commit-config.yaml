@@ -1,0 +1,40 @@
+# yaml-language-server: $schema=https://www.schemastore.org/prek.json
+#
+# Every fast, file-scoped check in one list. `prek install` wires it as the
+# pre-commit hook; CI and autofix.ci run the same list through `mise run lint`.
+# Tool versions live in mise.toml, so the hooks below only call what is on PATH.
+minimum_prek_version: "0.5.0"
+default_install_hook_types: [pre-commit]
+repos:
+  - repo: builtin
+    hooks:
+      - id: trailing-whitespace
+      - id: end-of-file-fixer
+      - id: mixed-line-ending
+      - id: check-merge-conflict
+      - id: check-added-large-files
+      - id: check-yaml
+      - id: check-toml
+      - id: check-json
+  - repo: local
+    hooks:
+      - id: stylua
+        name: stylua
+        entry: stylua
+        language: system
+        types: [lua]
+      - id: selene
+        name: selene
+        entry: selene
+        language: system
+        types: [lua]
+      - id: dprint
+        name: dprint
+        entry: dprint fmt
+        language: system
+        types_or: [yaml, toml, json, markdown]
+      - id: actionlint
+        name: actionlint
+        entry: actionlint
+        language: system
+        files: ^\.github/workflows/.+\.ya?ml$
