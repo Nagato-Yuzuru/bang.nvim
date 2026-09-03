@@ -163,6 +163,44 @@ local function segments_between(pos1, pos2, rtype)
   return segments
 end
 
+---@class bang.BlockHint How an adapter names a block's screen columns, which
+---`'<`/`'>` cannot once they are reordered by position (D-2): both corners
+---while the selection is live, or one corner plus the width a `.` replays.
+---@field anchor { lnum: integer, col: integer } A corner: 1-based line, byte column plus coladd.
+---@field cursor { lnum: integer, col: integer }|nil The other corner.
+---@field width integer|nil Width in screen cells, in place of `cursor`.
+---@field ragged boolean Whether `$` is active.
+
+---@class bang.BlockShape
+---@field width integer Width in screen cells.
+---@field ragged boolean Whether `$` is active.
+
+---Left and right screen cells of the block a hint describes.
+---@param buf integer
+---@param hint bang.BlockHint
+---@return integer left, integer right
+local function hint_columns(buf, hint)
+  local a = hint.anchor
+  local aleft, aright = cell_span(get_line(buf, a.lnum), a.col)
+  if hint.width then
+    return aleft, aleft + hint.width - 1
+  end
+  local c = hint.cursor
+  local cleft, cright = cell_span(get_line(buf, c.lnum), c.col)
+  return math.min(aleft, cleft), math.max(aright, cright)
+end
+
+---The shape of the block a hint describes, for a `.` repeat to replay. Vim
+---rebuilds the block at the cursor, but the opfunc can read back neither its
+---width (`']` clamps to a short last line) nor `$` (curswant is a column again).
+---@param buf integer
+---@param hint bang.BlockHint
+---@return bang.BlockShape
+function M.block_shape(buf, hint)
+  local left, right = hint_columns(buf, hint)
+  return { width = right - left + 1, ragged = hint.ragged }
+end
+
 ---@param buf integer
 ---@param region table Result of `M.normalize`.
 ---@return bang.Resolved|nil, string|nil
@@ -170,12 +208,10 @@ local function resolve_block(buf, region)
   local l1, l2 = region.start.lnum, region.finish.lnum
   local left, right, ragged
   if region.block then
-    -- The two live corners keep each screen column with its own corner. A far
-    -- corner on a short line, or a `$` corner, no longer drags the edge (D-2).
-    local a, c = region.block.anchor, region.block.cursor
-    local aleft, aright = cell_span(get_line(buf, a.lnum), a.col)
-    local cleft, cright = cell_span(get_line(buf, c.lnum), c.col)
-    left, right, ragged = math.min(aleft, cleft), math.max(aright, cright), region.block.ragged
+    -- Each screen column stays with its own corner. A far corner on a short
+    -- line, or a `$` corner, no longer drags the edge (D-2).
+    left, right = hint_columns(buf, region.block)
+    ragged = region.block.ragged
   else
     -- Raw `run()` with byte columns: the marks are all there is. Both edges come
     -- from the columns as given, never from clamped ones (R5, F7).
