@@ -71,7 +71,7 @@ end
 ---@field type "v"|"V"|"\22" Charwise, linewise or blockwise.
 ---@field start { lnum: integer, col: integer } 1-based line and byte column.
 ---@field finish { lnum: integer, col: integer } Inclusive end; `col = vim.v.maxcol` means end of line.
----@field block bang.BlockGeometry|nil Internal: a blockwise adapter's two live corners (D-2).
+---@field block bang.BlockHint|nil Internal: how a blockwise adapter names the block's columns (D-2).
 
 ---Filter `region` through `cmd` and replace it with the output.
 ---

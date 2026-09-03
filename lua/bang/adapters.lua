@@ -39,15 +39,13 @@ local function consume()
   return current
 end
 
----The operator's own last command, reused by `.`. Deliberately separate from
----the engine's `prev_cmd`: a `:Bang` in between does not change what `.` does.
----@type string|nil
-local repeat_cmd = nil
-
----@class bang.BlockGeometry
----@field anchor { lnum: integer, col: integer } Where CTRL-V was pressed (byte col + coladd).
----@field cursor { lnum: integer, col: integer } The moving corner (byte col + coladd).
----@field ragged boolean Whether `$` is active (curswant is maxcol).
+---What `.` replays: the operator's own last command, and the shape of the last
+---block it was invoked on. The command is deliberately separate from the
+---engine's `prev_cmd`, so a `:Bang` in between does not change what `.` does.
+---The shape is remembered because Vim's redo rebuilds the block at the cursor
+---but lets the opfunc read back neither its width nor `$` (D3.2).
+---@type { cmd: string|nil, block: bang.BlockShape|nil }
+local redo = { cmd = nil, block = nil }
 
 ---What the last blockwise Visual selection looked like while it was live. Both
 ---the `$` flag and the two corners are reset by the time a `:Bang` callback runs
@@ -61,7 +59,7 @@ local block_record = nil
 ---The live blockwise selection's geometry, read while it is still the current
 ---mode. `getpos("v")` is the fixed corner, `getcurpos()` the moving one; both
 ---carry `coladd` for virtual space (F7), and curswant is maxcol exactly for `$`.
----@return bang.BlockGeometry
+---@return bang.BlockHint
 local function live_block()
   local anchor, cursor = fn.getpos("v"), fn.getcurpos()
   return {
@@ -91,21 +89,22 @@ end
 ---A blockwise `bang.Region` carrying the two corners as a `block` hint, so the
 ---engine derives the screen columns from the corners rather than from the
 ---reordered `'<`/`'>` marks (D-2). `start`/`finish` still carry the line range.
----@param geom bang.BlockGeometry
+---@param corners bang.BlockHint
 ---@return bang.Region
-local function block_region(geom)
+local function block_region(corners)
   return {
     type = regions.BLOCK,
-    start = { lnum = math.min(geom.anchor.lnum, geom.cursor.lnum), col = 1 },
-    finish = { lnum = math.max(geom.anchor.lnum, geom.cursor.lnum), col = 1 },
-    block = geom,
+    start = { lnum = math.min(corners.anchor.lnum, corners.cursor.lnum), col = 1 },
+    finish = { lnum = math.max(corners.anchor.lnum, corners.cursor.lnum), col = 1 },
+    block = corners,
   }
 end
 
----The block geometry from `'<`/`'>`, the only source left on a `.` repeat, when
----there is no live selection to read. The marks cannot tell `$` from an
----overhang, so a repeat is never ragged.
----@return bang.BlockGeometry
+---The block corners from `'<`/`'>`, for a block with no live selection to
+---read: a forced motion (`g!<C-v>j`) is turned into a Visual block by Vim and
+---recorded in the marks. The marks cannot tell `$` from an overhang, so such a
+---block is never ragged.
+---@return bang.BlockHint
 local function block_from_marks()
   local from, to = fn.getpos("'<"), fn.getpos("'>")
   return {
@@ -115,25 +114,31 @@ local function block_from_marks()
   }
 end
 
----The region `g@` just marked out.
----@param buf integer
----@param motion "char"|"line"|"block"
----@param captured { visual: boolean, block: bang.BlockGeometry|nil }|nil
+---The block a `.` repeat replays. Vim rebuilds it at the cursor and sets `'[`
+---to its top-left corner and `']` to its last line; the width and `$` come
+---from the remembered shape, since `']` clamps to a short last line and
+---curswant is a column again by the time the opfunc runs (D3.2).
+---@param shape bang.BlockShape
 ---@return bang.Region
-local function operator_region(buf, motion, captured)
-  local rtype = "v"
-  if motion == "line" then
-    rtype = "V"
-  elseif motion == "block" then
-    rtype = regions.BLOCK
-  end
-  if rtype == regions.BLOCK then
-    -- `'[`/`']` describe the motion, not the block, so the geometry is the one
-    -- captured live (or, on a `.` repeat, the marks as a fallback). Passing the
-    -- two corners keeps each column with its own corner, which `'<`/`'>` lose on
-    -- a short far line or a `$` block (D-2).
-    return block_region(captured and captured.block or block_from_marks())
-  end
+local function redo_block_region(shape)
+  local from, to = fn.getpos("'["), fn.getpos("']")
+  return {
+    type = regions.BLOCK,
+    start = { lnum = from[2], col = 1 },
+    finish = { lnum = to[2], col = 1 },
+    block = {
+      anchor = { lnum = from[2], col = from[3] + from[4] },
+      width = shape.width,
+      ragged = shape.ragged,
+    },
+  }
+end
+
+---The charwise or linewise region `g@` just marked out, fresh or on a repeat.
+---@param buf integer
+---@param rtype "v"|"V"
+---@return bang.Region
+local function marks_region(buf, rtype)
   local from = api.nvim_buf_get_mark(buf, "[")
   local to = api.nvim_buf_get_mark(buf, "]")
   return {
@@ -160,7 +165,7 @@ local function prompt(buf, region, visual)
     -- Remembered as the shell saw it, so `%` keeps meaning the buffer the
     -- operator ran in (R17); the repeat then skips expansion rather than
     -- running it a second time (F5).
-    repeat_cmd = expanded or repeat_cmd
+    redo.cmd = expanded or redo.cmd
     if ok then
       -- The Visual marks are still set, so `@:` replays the same region (D9.2).
       history.record((visual and "'<,'>Bang " or "Bang ") .. input)
@@ -195,13 +200,34 @@ end
 function M.opfunc(motion)
   local current = consume()
   local buf = api.nvim_get_current_buf()
-  local region = operator_region(buf, motion, current.capture)
+  local rtype = ({ char = "v", line = "V", block = regions.BLOCK })[motion]
+
   if current.state == "repeat" then
     -- Reuse the operator's own last command, without prompting.
-    if repeat_cmd then
-      require("bang").run(repeat_cmd, region, { buf = buf, expanded = true })
+    if not redo.cmd then
+      return
     end
+    local region
+    if rtype ~= regions.BLOCK then
+      region = marks_region(buf, rtype)
+    elseif redo.block then
+      region = redo_block_region(redo.block)
+    else
+      region = block_region(block_from_marks())
+    end
+    require("bang").run(redo.cmd, region, { buf = buf, expanded = true })
     return
+  end
+
+  local region
+  if rtype == regions.BLOCK then
+    -- A live selection's corners were captured by the expr mapping; a forced
+    -- motion has none, and the marks Vim just set describe it.
+    local corners = current.capture.block or block_from_marks()
+    region = block_region(corners)
+    redo.block = regions.block_shape(buf, corners)
+  else
+    region = marks_region(buf, rtype)
   end
   prompt(buf, region, current.capture.visual)
 end
@@ -251,18 +277,13 @@ local function typed_visual_range(opts)
   return range_text(entry:sub(1, name - 1)):match("^'<%s*,%s*'>%s*$") ~= nil
 end
 
----Whether the last blockwise selection in `buf` was made with `$`. While the
----selection is still live -- `i_CTRL-O`, or a `:Bang` from a mapping -- the
----cursor still knows; otherwise the recorded answer is the only one left (F4).
----@param buf integer
----@return boolean
 ---The blockwise geometry for a `:Bang` on `buf`. Read live when the selection is
 ---still current (`i_CTRL-O`, or a mapping firing mid-block); otherwise the
 ---geometry `CursorMoved` recorded while it was live. When neither is available
 ----- a block built in `:normal!`, where `CursorMoved` never fires -- the marks
 ---give the corners and the record supplies only the `$` flag (D-2, F4).
 ---@param buf integer
----@return bang.BlockGeometry
+---@return bang.BlockHint
 local function block_geometry(buf)
   if fn.mode() == regions.BLOCK then
     return live_block()

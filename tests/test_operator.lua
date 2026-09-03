@@ -189,6 +189,40 @@ T["D3.2 a repeat after a cancelled prompt still uses the last run command"] = fu
   eq(H.get_lines(child), { "ONE two", "THREE four" })
 end
 
+T["D3.2 . repeats a blockwise Visual g! on the block under the cursor"] = function()
+  -- Vim's redo rebuilds the block at the cursor and updates `'[`/`']`, not
+  -- `'<`/`'>`. `rev` is not idempotent, so a repeat that lands on the old block
+  -- shows up there as a second reversal.
+  H.stub_input(child, { "rev" })
+  H.set_lines(child, { "abcdef", "abcdef", "", "abcdef", "abcdef" })
+  child.type_keys("gg", "0", "l", "<C-v>", "j", "l", "g!")
+  eq(H.get_lines(child), { "acbdef", "acbdef", "", "abcdef", "abcdef" })
+  child.type_keys("4G", "0", "l", ".")
+  eq(H.prompt_count(child), 1, { fail_reason = "`.` must not prompt again" })
+  eq(H.get_lines(child), { "acbdef", "acbdef", "", "acbdef", "acbdef" })
+end
+
+T["D3.2 . repeats a CTRL-V $ block to each line's end"] = function()
+  -- On a redo the opfunc cannot read `$` back: curswant is a column again and
+  -- `']` is clamped to the last line, so the shape has to be remembered.
+  H.stub_input(child, { "tr a-z A-Z" })
+  H.set_lines(child, { "abcdefgh", "abc", "", "abcdefgh", "abc" })
+  child.type_keys("gg", "0", "<C-v>", "j", "$", "g!")
+  eq(H.get_lines(child), { "ABCDEFGH", "ABC", "", "abcdefgh", "abc" })
+  child.type_keys("4G", "0", ".")
+  eq(H.get_lines(child), { "ABCDEFGH", "ABC", "", "ABCDEFGH", "ABC" })
+end
+
+T["D3.2 . repeats a block onto a shorter far line with its full width"] = function()
+  -- Boundary: `']` sits at the far line's end, which is narrower than the block.
+  H.stub_input(child, { "tr a-z A-Z" })
+  H.set_lines(child, { "abcdef", "abcdef", "", "abcdef", "ab" })
+  child.type_keys("gg", "0", "l", "<C-v>", "j", "2l", "g!")
+  eq(H.get_lines(child), { "aBCDef", "aBCDef", "", "abcdef", "ab" })
+  child.type_keys("4G", "0", "l", ".")
+  eq(H.get_lines(child), { "aBCDef", "aBCDef", "", "aBCDef", "aB" })
+end
+
 -- §4 Prompt flow ------------------------------------------------------------
 
 T["D3.2 . repeats the command of a failed run, not an older one"] = function()
