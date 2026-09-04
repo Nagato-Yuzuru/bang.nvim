@@ -183,11 +183,32 @@ local function hint_columns(buf, hint)
   local a = hint.anchor
   local aleft, aright = cell_span(get_line(buf, a.lnum), a.col)
   if hint.width then
+    -- A `.` replays a width that was measured through this function, so it is
+    -- already whatever 'selection' made of the original block.
     return aleft, aleft + hint.width - 1
   end
   local c = hint.cursor
   local cleft, cright = cell_span(get_line(buf, c.lnum), c.col)
-  return math.min(aleft, cleft), math.max(aright, cright)
+  -- Vim builds the block from the corner earlier in the buffer and the one
+  -- later: the later corner widens the block to its own right edge, except
+  -- that 'selection' = "exclusive" leaves that corner's character out when the
+  -- block stays at least as wide as the earlier corner's character without it.
+  -- So `l<C-v>ld` on "1234" gives "134", `<C-v>jh` still takes both columns,
+  -- and a <Tab> or a wide character on the right edge stays in whole (#8).
+  local later = c.lnum > a.lnum or (c.lnum == a.lnum and c.col > a.col)
+  local eleft, eright, lleft, lright = aleft, aright, cleft, cright
+  if not later then
+    eleft, eright, lleft, lright = cleft, cright, aleft, aright
+  end
+  local right = eright
+  if lright > eright then
+    if vim.o.selection == "exclusive" and lleft - 1 >= eright then
+      right = lleft - 1
+    else
+      right = lright
+    end
+  end
+  return math.min(eleft, lleft), right
 end
 
 ---The shape of the block a hint describes, for a `.` repeat to replay. Vim
@@ -278,6 +299,22 @@ function M.resolve(buf, region)
   return { kind = "char", segments = segments }
 end
 
+---The screen cell (0-based) where a segment's text starts, which is where a
+---<Tab> inside it begins counting: after the line's own text before the
+---segment, or at the block's left edge when the line stops short of it. Every
+---width of a block row is measured from here, on the way in and on the way
+---out, so a <Tab> is as wide in the write-back as it was in the input (#8).
+---@param line string
+---@param seg bang.Segment
+---@param block bang.Block
+---@return integer
+local function segment_start(line, seg, block)
+  if seg.scol == 0 then
+    return block.left - 1
+  end
+  return fn.strdisplaywidth(line:sub(1, seg.scol - 1))
+end
+
 ---The text the command receives, one string per line of the region.
 ---Rows of a block are padded to the block width so that a command which maps
 ---lines to lines sees the column it was pointed at, and so that sorting a
@@ -288,9 +325,11 @@ end
 function M.text(buf, resolved)
   local out = {}
   for i, seg in ipairs(resolved.segments) do
-    local text = seg.scol == 0 and "" or get_line(buf, seg.lnum):sub(seg.scol, seg.ecol)
+    local line = get_line(buf, seg.lnum)
+    local text = seg.scol == 0 and "" or line:sub(seg.scol, seg.ecol)
     if resolved.block then
-      local pad = resolved.block.width - fn.strdisplaywidth(text)
+      local start = segment_start(line, seg, resolved.block)
+      local pad = resolved.block.width - fn.strdisplaywidth(text, start)
       if pad > 0 then
         text = text .. string.rep(" ", pad)
       end
@@ -393,15 +432,33 @@ end
 ---@return integer lnum, integer col
 local function write_blockwise(buf, resolved, lines)
   local segments, block = resolved.segments, resolved.block
-  local rewritten, end_col = {}, 0
+  -- Rows of unequal width are padded so that the text to the right of the
+  -- block moves by the same amount on every line, which is what blockwise put
+  -- does with a register of uneven rows. The measure is each row's growth
+  -- against what the command was handed for it -- the block's width, or more
+  -- where a <Tab> or a wide character joined the block whole -- so a command
+  -- that keeps every row's width, `gU` included, pads nothing, and a block
+  -- cleared to nothing pads nothing either (#8).
+  local rows, most = {}, -math.huge
   for i, seg in ipairs(segments) do
     local line = get_line(buf, seg.lnum)
     local original = seg.scol == 0 and "" or line:sub(seg.scol, seg.ecol)
-    local text = lines[i]
+    local start = segment_start(line, seg, block)
+    local had = fn.strdisplaywidth(original, start)
+    local growth = fn.strdisplaywidth(lines[i], start) - math.max(block.width, had)
+    rows[i] = { line = line, had = had, growth = growth }
+    most = math.max(most, growth)
+  end
+  local rewritten, end_col = {}, 0
+  for i, seg in ipairs(segments) do
+    local line = rows[i].line
+    local align = most - rows[i].growth
+    local text = lines[i] .. string.rep(" ", align)
     if seg.scol == 0 or seg.ecol >= #line then
       -- Where the block runs off the end of the line, take back the spaces the
-      -- padding added -- exactly those, never the buffer's own (F8, R10).
-      local added = math.max(0, block.width - fn.strdisplaywidth(original))
+      -- plugin added -- the input padding and the alignment padding, exactly
+      -- those, never the buffer's own (F8, R10, #8).
+      local added = math.max(0, block.width - rows[i].had) + align
       local trailing = #(text:match(" *$") or "")
       text = text:sub(1, #text - math.min(added, trailing))
     end
@@ -419,7 +476,9 @@ local function write_blockwise(buf, resolved, lines)
       end
       rewritten[i] = head .. text .. tail
       if i == #segments then
-        end_col = #head + #text
+        -- A cleared row leaves `']` on the character after the block, where
+        -- blockwise `d` puts it (#8).
+        end_col = #head + math.max(#text, 1)
       end
     end
   end
@@ -442,14 +501,25 @@ function M.write(buf, resolved, lines)
     return nil
   end
   if resolved.kind == "block" and #lines ~= #resolved.segments then
-    -- No non-arbitrary way to map a different number of lines onto the block,
-    -- so refuse before the first write (D7.4).
-    return ("bang: the command returned %d line(s) for a %d-line block, nothing was replaced"):format(
-      #lines,
-      #resolved.segments
-    )
+    if #lines > 0 then
+      -- No non-arbitrary way to map a different number of lines onto the block,
+      -- so refuse before the first write (D7.4).
+      return ("bang: the command returned %d line(s) for a %d-line block, nothing was replaced"):format(
+        #lines,
+        #resolved.segments
+      )
+    end
+    -- Zero output clears the block instead: every row becomes empty and the
+    -- text after it moves left, as blockwise `d` does (#8).
+    lines = {}
+    for _ = 1, #resolved.segments do
+      lines[#lines + 1] = ""
+    end
   end
 
+  -- Every write below saves undo state first, which is where Neovim itself
+  -- fires FileChangedRO and warns W10 on the first change to a readonly
+  -- buffer, exactly as the built-in filter does (#8).
   local ok, result = pcall(function()
     local lnum, col
     if resolved.kind == "line" then

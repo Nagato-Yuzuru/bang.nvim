@@ -298,6 +298,47 @@ local function block_geometry(buf)
   return geometry
 end
 
+---@param buf integer
+---@param lnum integer
+---@return string
+local function get_line(buf, lnum)
+  return api.nvim_buf_get_lines(buf, lnum - 1, lnum, false)[1] or ""
+end
+
+---The last character a charwise Visual selection covers. With the default
+---'selection' the `'>` mark is that character; under "exclusive" it is the one
+---after it, so step back over a whole character -- which may be several bytes
+---(#8). From column 1 the selection ends at the end of the line above, and the
+---line break stays in the buffer, exactly as a `$` selection leaves it. A
+---selection with no width -- `v<Esc>` -- is one character in Vim too, so there
+---is nothing to step back from.
+---@param buf integer
+---@param from integer[] Result of `getpos("'<")`: line, byte column and coladd.
+---@param to integer[] Result of `getpos("'>")`.
+---@return { lnum: integer, col: integer }
+local function charwise_end(buf, from, to)
+  local lnum, col = to[2], to[3] + to[4]
+  if vim.o.selection ~= "exclusive" or (lnum == from[2] and col == from[3] + from[4]) then
+    return { lnum = lnum, col = col }
+  end
+  if to[4] > 0 then
+    -- Virtual space: one column back is still past the end of the line (F7).
+    return { lnum = lnum, col = col - 1 }
+  end
+  if col == 1 and lnum > 1 then
+    lnum = lnum - 1
+    col = #get_line(buf, lnum)
+  else
+    col = col - 1
+  end
+  local line = get_line(buf, lnum)
+  col = math.min(col, #line)
+  if col < 1 then
+    return { lnum = lnum, col = 1 }
+  end
+  return { lnum = lnum, col = col + vim.str_utf_start(line, col) }
+end
+
 ---The region a `:Bang` call acts on (D3.3, R2). The last Visual selection is
 ---used only when the range covers exactly its lines, the selection was charwise
 ---or blockwise, and a typed command line does not say otherwise.
@@ -328,7 +369,7 @@ local function command_region(opts, buf)
     return {
       type = mode,
       start = { lnum = from[2], col = from[3] + from[4] },
-      finish = { lnum = to[2], col = to[3] + to[4] },
+      finish = charwise_end(buf, from, to),
     },
       true
   end

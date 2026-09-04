@@ -575,4 +575,79 @@ T["F12 a block entered with i_CTRL-O is taken as a block or refused"] = function
   })
 end
 
+-- §12e Issue #8 rulings -----------------------------------------------------
+
+T["#8 v$ filters to the last character and keeps the line break"] = function()
+  -- Vim's own oracles disagree -- `v$d` and `v$c` join the lines, `v$y` yanks
+  -- the break, `v$gU` leaves it -- and the ruling follows `gU`.
+  H.stub_input(child, { "tr a-z A-Z" })
+  H.set_lines(child, { "abc", "def" })
+  child.type_keys("gg", "0", "v", "$", "g!")
+  eq(H.get_lines(child), { "ABC", "def" })
+end
+
+T["#8 a block edge inside a <Tab> sends the whole tab"] = function()
+  -- The block's left edge is cell 4, inside the tab that spans cells 2 to 8:
+  -- the tab belongs to the block whole, as `gU` treats it, and the "a" before
+  -- it is left alone. Splitting it into spaces, as `c` and `d` do, would change
+  -- bytes outside the region.
+  child.o.tabstop = 8
+  H.stub_input(child, { "tr '\\t' X" })
+  H.set_lines(child, { "a\tbcd", "efghijklmno" })
+  child.type_keys("2G", "0", "3l", "<C-v>", "7l", "k", "g!")
+  eq(H.get_lines(child), { "aXbcd", "efghijklmno" })
+end
+
+T["#8 g! on an exclusive block leaves out the cursor column"] = function()
+  -- Oracle: with 'selection' = "exclusive", `l<C-v>ld` on "1234" gives "134".
+  child.o.selection = "exclusive"
+  H.stub_input(child, { "tr 0-9 a-j" })
+  H.set_lines(child, { "1234", "5678" })
+  child.type_keys("gg", "0", "l", "<C-v>", "jl", "g!")
+  eq(H.get_lines(child), { "1c34", "5g78" })
+end
+
+T["#8 an exclusive block keeps a wide character on its right edge whole"] = function()
+  -- Vim leaves the later corner's character out only when the block stays at
+  -- least as wide as the earlier corner's character without it. Every result
+  -- here is what `gU` gives on the same keys.
+  child.o.selection = "exclusive"
+  H.stub_input(child, { "tr a-z A-Z" })
+
+  -- The cursor lands on "あ" (cells 1-2) below "a" (cell 1): too narrow to
+  -- exclude, so the block is cells 1-2.
+  H.set_lines(child, { "ab", "あ" })
+  child.type_keys("gg", "0", "<C-v>", "j", "g!")
+  eq(H.get_lines(child), { "AB", "あ" })
+
+  -- The cursor lands on "あ" (cells 3-4) below "c" (cell 3): same, cells 3-4.
+  H.stub_input(child, { "tr a-z A-Z" })
+  H.set_lines(child, { "abcd", "abあ" })
+  child.type_keys("gg", "0", "2l", "<C-v>", "j", "g!")
+  eq(H.get_lines(child), { "abCD", "abあ" })
+end
+
+T["#8 an exclusive block keeps a <Tab> on its right edge whole"] = function()
+  child.o.tabstop = 8
+  child.o.selection = "exclusive"
+  H.stub_input(child, { "tr a-z A-Z" })
+  -- The cursor lands inside the tab (cells 3-8) below "c" (cell 3): the block
+  -- is cells 3-8, so line 1 loses its case on "cd" and the tab stays.
+  H.set_lines(child, { "abcd", "ab\tz" })
+  child.type_keys("gg", "0", "2l", "<C-v>", "j", "g!")
+  eq(H.get_lines(child), { "abCD", "ab\tz" })
+end
+
+T["#8 an exclusive block widened leftwards by a <Tab> matches gU"] = function()
+  -- The later corner sits inside a tab that starts at cell 1, so it drags the
+  -- left edge out to cell 1 and holds the right edge at cell 8: `gU` on the
+  -- same keys gives exactly this.
+  child.o.tabstop = 8
+  child.o.selection = "exclusive"
+  H.stub_input(child, { "tr a-z A-Z" })
+  H.set_lines(child, { "aあqあzqz", "bazq", "\tあ b" })
+  child.type_keys("gg", "0", "2l", "<C-v>", "2j", "g!")
+  eq(H.get_lines(child), { "AあQあZQz", "BAZQ", "\tあ b" })
+end
+
 return T
