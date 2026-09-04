@@ -3,7 +3,7 @@ actionlint = "1.7.12"
 # selene ships an arm64-only macOS binary; on macOS mise builds it with cargo instead.
 "aqua:Kampfkarren/selene" = { version = "0.31.0", os = ["linux", "windows"] }
 "cargo:selene" = { version = "0.31.0", os = ["macos"] }
-dprint = "0.57.0"
+dprint = "0.57.1"
 prek = "0.5.2"
 stylua = "2.5.2"
 
