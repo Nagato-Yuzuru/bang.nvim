@@ -118,12 +118,20 @@ local function words(value)
   return out
 end
 
+---The program 'shell' names, and the arguments it carries, split the way
+---`M.argv` splits them. Exported so that `:checkhealth bang` can ask whether
+---the program the plugin would spawn exists (#17).
+---@return string[]
+function M.shell_words()
+  return words(vim.o.shell)
+end
+
 ---The argv `!` would use. Both 'shell' and 'shellcmdflag' may carry arguments
 ---(`csh -f`, and pwsh sets three flags), so both are split (D6.1, R6).
 ---@param cmd string
 ---@return string[]
 function M.argv(cmd)
-  local argv = words(vim.o.shell)
+  local argv = M.shell_words()
   vim.list_extend(argv, words(vim.o.shellcmdflag))
   argv[#argv + 1] = cmd
   return argv

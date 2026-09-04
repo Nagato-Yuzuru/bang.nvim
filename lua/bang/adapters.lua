@@ -391,6 +391,23 @@ local function global_map(mode, lhs)
   end
 end
 
+---The default keys, each with the global mapping that holds it right now.
+---`rhs` is the `<Plug>` name the plugin would create; `map` is what
+---`nvim_get_keymap()` reports for the key, or nil when nothing owns it.
+---Exported so that `:checkhealth bang` judges the keys by the same table and
+---the same lookup the plugin itself decides with (#17).
+---@return { mode: string, lhs: string, rhs: string, map: table|nil }[]
+function M.default_keymap_state()
+  local state = {}
+  for _, map in ipairs(DEFAULT_KEYMAPS) do
+    for _, mode in ipairs(map.modes) do
+      state[#state + 1] =
+        { mode = mode, lhs = map.lhs, rhs = map.rhs, map = global_map(mode, map.lhs) }
+    end
+  end
+  return state
+end
+
 ---Create or remove the default `g!` / `g!!` keymaps. A key already mapped by
 ---the user is left alone, and only a mapping that is still ours is removed (R7).
 ---@param enable boolean
