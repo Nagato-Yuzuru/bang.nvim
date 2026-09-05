@@ -1124,13 +1124,70 @@ end
 
 T["F9 (D7.6) a blockwise write is all-or-nothing"] = function()
   MiniTest.skip(
-    "No seam to inject a mid-write failure from outside the plugin: the N row "
-      .. "writes happen inside one run() call, and nothing a test can set from the "
-      .. "public contract (nomodifiable, an autocmd, a buffer attach) fires between "
-      .. "them. The closest available guard is "
-      .. "'D7.5 one undo restores the buffer after a blockwise run', which pins the "
-      .. "single undo step but not atomicity on error."
+    "Does not hold: the rows go in one setbufline() call, but Neovim reports "
+      .. "each line to an nvim_buf_attach on_bytes callback as it goes -- turning "
+      .. "off 'modifiable' from the callback for the second line leaves the block "
+      .. "half filled and the run reported as failed. Tracked in issue #28; there "
+      .. "is no all-or-nothing to assert until it is fixed. The nearest standing "
+      .. "guard is 'D7.5 one undo restores the buffer after a blockwise run', "
+      .. "which pins the single undo step."
   )
+end
+
+-- §12f Issue #23 rulings ----------------------------------------------------
+
+T["#23 a NUL in the output lands in a linewise write as a NUL"] = function()
+  H.set_lines(child, { "one", "two" })
+  local res = H.run(child, "printf 'a\\0b\\n'", H.linewise(1, 1))
+  eq(res.ok, true)
+  eq(H.get_lines(child), { "a\0b", "two" })
+end
+
+T["#23 a NUL in the output lands in a charwise write as a NUL"] = function()
+  H.set_lines(child, { "one", "two" })
+  local res = H.run(child, "printf 'a\\0b\\n'", H.charwise(1, 1, 1, 3))
+  eq(res.ok, true)
+  eq(H.get_lines(child), { "a\0b", "two" })
+end
+
+T["#23 a NUL in the output lands in a blockwise write as a NUL"] = function()
+  -- As many output rows as the block has, so nothing is refused for the count.
+  -- Every row is still measured for alignment, which is where a NUL used to be
+  -- refused as a Blob.
+  H.set_lines(child, { "one", "two" })
+  local res = H.run(child, "printf 'a\\0b\\nc\\0d\\n'", H.blockwise(1, 1, 2, 3))
+  eq(res.ok, true)
+  eq(H.get_lines(child), { "a\0b", "c\0d" })
+end
+
+T["#23 a block over a line that already holds a NUL is filtered, not refused"] = function()
+  H.set_lines(child, { "a\0b\tc" })
+  local res = H.run(child, "tr a-z A-Z", H.blockwise(1, 1, 1, 5))
+  eq(res.ok, true)
+  eq(H.get_lines(child), { "A\0B\tC" })
+end
+
+T["#23 a NUL-carrying linewise write keeps marks the way the built-in ! does"] = function()
+  -- The same 'cpo-R' rule as "D7.5 a linewise run keeps marks the way the
+  -- built-in ! does", on output the write-back could not carry before. Four
+  -- lines for a three-line region, so a mark inside the region and one below it
+  -- are both in play.
+  local cmd = "printf 'p\\0q\\nr\\0s\\nt\\0u\\nv\\0w\\n'"
+  local function place_marks()
+    child.cmd("enew!")
+    H.set_lines(child, { "one", "two", "three", "tail" })
+    child.type_keys("2G", "ma", "4G", "mb", "gg")
+  end
+
+  place_marks()
+  child.cmd("silent! 1,3!" .. cmd)
+  local builtin = { lines = H.get_lines(child), marks = marks() }
+
+  place_marks()
+  local res = H.run(child, cmd, H.linewise(1, 3))
+  eq(res.ok, true)
+  eq(H.get_lines(child), { "p\0q", "r\0s", "t\0u", "v\0w", "tail" })
+  eq({ lines = H.get_lines(child), marks = marks() }, builtin)
 end
 
 return T
