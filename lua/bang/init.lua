@@ -13,7 +13,8 @@ local regions = require("bang.region")
 
 local M = {}
 
----The last command that ran, for the `!` substitution of `expand_bang` (D8.2).
+---The last command handed to the shell, for the `!` substitution of
+---`expand_bang` (D8.2, #8).
 ---Vim's own "previous external command" is not readable from Lua, so the
 ---plugin keeps its own. Separate from the operator's repeat state.
 local prev_cmd = nil
@@ -130,6 +131,11 @@ function M.run(cmd, region, opts)
   end
 
   local input = regions.stdin(resolved, regions.text(buf, resolved))
+  -- Remembered here, as the shell receives it: the built-in `:!` replays a
+  -- command whatever its exit code, so `:!!` after `:!false` runs `false`
+  -- again (#8). Anything refused before this point never ran and is not
+  -- remembered.
+  prev_cmd = cmd
   local result, exec_err = exec.run(cmd, input, cfg.timeout)
   if not result then
     return fail(exec_err --[[@as string]], cmd)
@@ -156,7 +162,6 @@ function M.run(cmd, region, opts)
   if write_err then
     return fail(write_err, cmd)
   end
-  prev_cmd = cmd
   return true, nil, cmd
 end
 

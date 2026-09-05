@@ -756,14 +756,27 @@ T["D8.2 expand_bang with no previous command errors and runs nothing"] = functio
   eq(H.log_shell(child, log).stdin, nil, { fail_reason = "the shell must not have been invoked" })
 end
 
-T["D8.2 a failed run does not become the previous command"] = function()
+T["#8 a command is remembered as soon as it runs, whatever its exit code"] = function()
+  -- The built-in `:!` remembers the command it handed the shell however it
+  -- ended, so `:!!` after `:!false` runs `false` again. #8 supersedes D8.2's
+  -- earlier reading, where only a successful run was remembered.
   H.setup(child, { expand_bang = true })
-  H.set_lines(child, { "one", "two", "three" })
-  eq(H.run(child, "echo first", H.linewise(1, 1)).ok, true)
-  eq(H.run(child, "exit 9", H.linewise(2, 2)).ok, false)
-  local res = H.run(child, "echo 'x!y'", H.linewise(3, 3))
+  H.set_lines(child, { "one", "two" })
+  eq(H.run(child, "false", H.linewise(1, 1)).ok, false)
+  local res = H.run(child, "echo !", H.linewise(2, 2))
   eq(res.ok, true)
-  eq(H.get_lines(child)[3], "xecho firsty")
+  eq(H.get_lines(child), { "one", "false" })
+end
+
+T["#8 a run that never reaches the shell is not remembered"] = function()
+  H.setup(child, { expand_bang = true })
+  H.set_lines(child, { "one", "two" })
+  eq(H.run(child, "echo first", H.linewise(1, 1)).ok, true)
+  -- Refused before the shell: the region is outside the buffer.
+  eq(H.run(child, "echo second", H.linewise(9, 9)).ok, false)
+  local res = H.run(child, "echo 'x!y'", H.linewise(2, 2))
+  eq(res.ok, true)
+  eq(H.get_lines(child)[2], "xecho firsty")
 end
 
 -- §12b Review round 1 adjudications ----------------------------------------
@@ -992,6 +1005,121 @@ T["F11 (D6.1) a quoted 'shell' path containing a space parses as one word"] = fu
   local res = H.run(child, "sort", H.linewise(1, 1))
   eq(res.ok, true, { fail_reason = "the quoted path must not be split into two words" })
   eq(H.log_shell(child, log).argv, { "-c", "sort" })
+end
+
+-- §12e Issue #8 rulings -----------------------------------------------------
+
+T["#8 block output rows of unequal width are padded to the widest row"] = function()
+  -- Vim's blockwise put pads a short row so that the text to the right of the
+  -- block shifts by the same amount on every line: "aa"/"b" put at column 2
+  -- into "1234"/"5678" gives "12aa34"/"56b 78".
+  H.set_lines(child, { "1234", "5678" })
+  local res = H.run(child, "printf 'aa\\nb\\n'", H.blockwise(1, 2, 2, 3))
+  eq(res.ok, true)
+  eq(H.get_lines(child), { "1aa4", "5b 8" })
+end
+
+T["#8 block rows that grow past the block are aligned too"] = function()
+  -- The case the ruling is for: a command that widens some rows. Blockwise put
+  -- pads "aaa"/"b" to "aaa"/"b  ", so the text after the block stays aligned.
+  H.set_lines(child, { "1234", "5678" })
+  local res = H.run(child, "printf 'aaa\\nb\\n'", H.blockwise(1, 2, 2, 3))
+  eq(res.ok, true)
+  eq(H.get_lines(child), { "1aaa4", "5b  8" })
+end
+
+T["#8 a <Tab> in the output is measured where it lands"] = function()
+  -- A tab is as wide as the distance to the next tab stop, so the row's width
+  -- is only known from the block's column: "a<Tab>b" placed at cell 2 spans
+  -- cells 2 to 9, and the other row is padded to match, so "ZZ" stays aligned.
+  child.o.tabstop = 8
+  H.set_lines(child, { "1234ZZ", "5678ZZ" })
+  local res = H.run(child, "printf 'a\\tb\\nc\\n'", H.blockwise(1, 2, 2, 3))
+  eq(res.ok, true)
+  eq(H.get_lines(child), { "1a\tb4ZZ", "5c       8ZZ" })
+end
+
+T["#8 zero output on a block holding a whole <Tab> clears it cleanly"] = function()
+  -- The tab joined the block whole (cells 2 to 8 of "a<Tab>b"), so clearing
+  -- the block removes the tab and nothing else: no stray space, and the line
+  -- that never reached the block is untouched.
+  child.o.tabstop = 8
+  H.set_lines(child, { "a\tb", "1" })
+  local res = H.run(child, "true", H.blockwise(1, 2, 2, 2))
+  eq(res.ok, true)
+  eq(H.get_lines(child), { "ab", "1" })
+end
+
+T["#8 a padded block row reaching the line's end gains no trailing space"] = function()
+  -- The alignment padding is taken back wherever the block runs off the end of
+  -- the line, exactly like the input padding.
+  H.set_lines(child, { "1234", "56" })
+  local res = H.run(child, "printf 'xyz\\nq\\n'", H.blockwise(1, 3, 2, 4))
+  eq(res.ok, true)
+  eq(H.get_lines(child), { "12xyz", "56q" })
+end
+
+T["#8 zero output clears a block instead of being refused"] = function()
+  -- As blockwise `d` does: `d` on columns 2 to 3 of "1234"/"5678" gives
+  -- "14"/"58".
+  H.set_lines(child, { "1234", "5678" })
+  local res = H.run(child, "true", H.blockwise(1, 2, 2, 3))
+  eq(res.ok, true)
+  eq(H.get_lines(child), { "14", "58" })
+end
+
+T["#8 a linewise run on a readonly buffer warns W10 exactly once"] = function()
+  -- Neovim raises the warning itself when it saves undo state for the write,
+  -- and fires FileChangedRO first; the plugin must add nothing of its own.
+  H.set_lines(child, { "c", "a", "b" })
+  child.cmd("messages clear")
+  child.lua("vim.bo.modified = false; vim.bo.readonly = true; vim.v.warningmsg = ''")
+  local res = H.run(child, "sort", H.linewise(1, 3))
+  eq(res.ok, true)
+  eq(H.get_lines(child), { "a", "b", "c" })
+  eq(child.lua_get("vim.v.warningmsg"), "W10: Warning: Changing a readonly file")
+  eq(#H.notifications(child), 0)
+  local _, warnings = child.fn.execute("messages"):gsub("W10", "")
+  eq(warnings, 1)
+end
+
+T["#8 a blockwise run on a readonly buffer warns W10 exactly once"] = function()
+  H.set_lines(child, { "1234", "5678" })
+  child.cmd("messages clear")
+  child.lua("vim.bo.modified = false; vim.bo.readonly = true; vim.v.warningmsg = ''")
+  eq(H.run(child, "tr 0-9 a-j", H.blockwise(1, 2, 2, 3)).ok, true)
+  eq(H.get_lines(child), { "1cd4", "5gh8" })
+  eq(child.lua_get("vim.v.warningmsg"), "W10: Warning: Changing a readonly file")
+  eq(#H.notifications(child), 0)
+  local _, warnings = child.fn.execute("messages"):gsub("W10", "")
+  eq(warnings, 1)
+end
+
+T["#8 a charwise run on a readonly buffer warns W10 exactly once"] = function()
+  -- `nvim_buf_set_text` raises W10 itself, so the plugin must not add its own.
+  H.set_lines(child, { "abc" })
+  child.lua("vim.bo.modified = false; vim.bo.readonly = true; vim.v.warningmsg = ''")
+  local res = H.run(child, "tr a-z A-Z", H.charwise(1, 1, 1, 3))
+  eq(res.ok, true)
+  eq(H.get_lines(child), { "ABC" })
+  eq(child.lua_get("vim.v.warningmsg"), "W10: Warning: Changing a readonly file")
+  eq(#H.notifications(child), 0)
+end
+
+T["#8 a readonly buffer checked out by FileChangedRO is not warned about"] = function()
+  H.set_lines(child, { "c", "a", "b" })
+  child.lua([[
+    vim.bo.modified = false
+    vim.bo.readonly = true
+    vim.v.warningmsg = ''
+    vim.api.nvim_create_autocmd("FileChangedRO", {
+      callback = function() vim.bo.readonly = false end,
+    })
+  ]])
+  eq(H.run(child, "sort", H.linewise(1, 3)).ok, true)
+  eq(H.get_lines(child), { "a", "b", "c" })
+  eq(child.lua_get("vim.v.warningmsg"), "")
+  eq(#H.notifications(child), 0)
 end
 
 T["F9 (D7.6) a blockwise write is all-or-nothing"] = function()

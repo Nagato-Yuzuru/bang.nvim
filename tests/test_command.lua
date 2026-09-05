@@ -413,4 +413,53 @@ T["F10 (D9.3) a :substitute whose pattern contains Bang stays out of history()"]
   eq(H.history(child), { "sort" })
 end
 
+-- §12e Issue #8 rulings -----------------------------------------------------
+
+T["#8 :'<,'>Bang under 'selection' = exclusive filters exactly the selection"] = function()
+  -- Under "exclusive" the '> mark sits one character past the selection: `viw`
+  -- on "abc def" leaves '< at column 1 and '> at column 4. The command brackets
+  -- what it received, so a selection one character too long is visible; a
+  -- case-folding one would hide it behind the unchanged space.
+  child.o.selection = "exclusive"
+  H.set_lines(child, { "abc def" })
+  child.type_keys("gg", "0", "viw", "<Esc>")
+  H.type_cmd(child, "'<,'>Bang sed 's/.*/[&]/'")
+  eq(H.get_lines(child), { "[abc] def" })
+end
+
+T["#8 an exclusive selection ending after a multibyte character keeps it whole"] = function()
+  -- Stepping back from the exclusive end is a character, not a byte: "い" is
+  -- three of them.
+  child.o.selection = "exclusive"
+  H.set_lines(child, { "aa あい bb" })
+  child.type_keys("gg", "0", "3l", "v", "2l", "<Esc>")
+  H.type_cmd(child, "'<,'>Bang sed 's/.*/[&]/'")
+  eq(H.get_lines(child), { "aa [あい] bb" })
+end
+
+T["#8 :'<,'>Bang on an exclusive block leaves out the cursor column"] = function()
+  -- Oracle: with 'selection' = "exclusive", `l<C-v>ld` on "1234" gives "134".
+  child.o.selection = "exclusive"
+  H.set_lines(child, { "1234", "5678" })
+  child.type_keys("gg", "0", "l", "<C-v>", "jl", "<Esc>")
+  H.type_cmd(child, "'<,'>Bang tr 0-9 a-j")
+  eq(H.get_lines(child), { "1c34", "5g78" })
+end
+
+T["#8 an exclusive selection with no width is one character, as in Vim"] = function()
+  -- `v<Esc>` leaves '< and '> on the same character. Vim's `gv` then `gU`
+  -- changes that one character; the step back must not cross '< and reach
+  -- the character before it, or the line above.
+  child.o.selection = "exclusive"
+  H.set_lines(child, { "abcdef", "ghijkl" })
+  child.type_keys("gg", "0", "3l", "v", "<Esc>")
+  H.type_cmd(child, "'<,'>Bang sed 's/.*/[&]/'")
+  eq(H.get_lines(child), { "abc[d]ef", "ghijkl" })
+
+  H.set_lines(child, { "abcdef", "ghijkl" })
+  child.type_keys("2G", "0", "v", "<Esc>")
+  H.type_cmd(child, "'<,'>Bang sed 's/.*/[&]/'")
+  eq(H.get_lines(child), { "abcdef", "[g]hijkl" })
+end
+
 return T

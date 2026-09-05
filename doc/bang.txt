@@ -23,10 +23,13 @@ buffer alone. |bang-differences| has the full list.
 ==============================================================================
 2. REQUIREMENTS                                            *bang-requirements*
 
-Neovim 0.11 or newer. |getregionpos()| resolves the region and the
+Neovim 0.11 or newer, on Unix. |getregionpos()| resolves the region and the
 "shellcmdline" |:command-completion| type completes the command line; both
 first appear in 0.11. On anything older the plugin registers nothing and
-warns once.
+warns once. Windows is not supported yet: 'shellquote' and 'shellxquote' are
+ignored, see issue #20.
+
+|:checkhealth| bang reports this gate, |g:bang|, the default keys and 'shell'.
 
 ==============================================================================
 3. USAGE                                                          *bang-usage*
@@ -44,6 +47,10 @@ g!{motion}              Prompt with "!" and filter the text {motion} covers
 {Visual}g!              Filter the Visual selection, charwise, linewise or
                         blockwise as it was made. A blockwise selection made
                         with "$" filters to the end of every line it covers.
+                        A charwise selection made with "$" stops at the last
+                        character: the line break stays in the buffer, the
+                        way |gU| leaves it. 'selection' is honoured, so with
+                        "exclusive" the last character stays out.
 
 .                       Repeat the last operator run: same motion, same
                         command, no prompt. A |:Bang| in between does not
@@ -53,6 +60,22 @@ Cancelling the prompt with <Esc>, or entering an empty command, writes
 nothing, records nothing, and leaves "." alone. The prompt completes shell
 commands and their file arguments.
 
+BLOCKWISE                                                     *bang-blockwise*
+
+A block edge falling inside a <Tab> or a double-width character takes the
+whole character, as |gU| does. Splitting it into spaces, the way |v_d| and
+|v_c| do, would change bytes outside the region.
+
+Output rows of unequal width are padded with spaces so that the text to the
+right of the block moves by the same amount on every line, as a blockwise
+|p| does with a register of uneven rows. A command that keeps every row's
+width pads nothing. The padding is taken back wherever the block runs off
+the end of a line, so it never becomes trailing whitespace.
+
+A command that writes nothing clears the block: every row goes empty and
+the text after it moves left, as |v_d| does. Any other row count that does
+not match the block is refused and nothing is written.
+
                                                                        *:Bang*
 :[range]Bang {cmd}      Filter the lines of [range] through {cmd}. Without a
                         range, the current line.
@@ -60,6 +83,8 @@ commands and their file arguments.
 :'<,'>Bang {cmd}        Typed from a charwise or blockwise Visual selection,
                         filters the selection itself rather than its lines.
                         Every other range is linewise, as |:range!| is.
+                        'selection' is honoured: with "exclusive" the last
+                        character of the selection is not filtered.
 
 :[range]Bang! {cmd}     Write the output even when the command fails: stdout
                         followed by stderr, whatever the exit code, for that
@@ -179,6 +204,11 @@ The "!" in the command ~
         the previous command, inside quotes as well: after ":%!echo first",
         ":%!echo 'x!y'" writes "xecho firsty". bang.nvim leaves "!"
         literal; expand_bang = true reproduces the substitution exactly.
+        A command is remembered as soon as it is handed to the shell,
+        whatever becomes of it: a non-zero exit, a timeout, even a 'shell'
+        that fails to start, so "!" expands to a failed command too. A run
+        refused before that -- an empty command, an invalid region --
+        remembers nothing.
 
 Visual range ~
         ":'<,'>!" is a line range. ":'<,'>Bang" typed from a charwise or
@@ -210,6 +240,9 @@ Known gaps ~
           that has a <Tab> before the anchor is filtered inexactly, because
           the column is recovered as "col + off", which mixes byte and cell
           counts; tab-free past-end-of-line blocks are exact.
+        • ":lockmarks" and ":keepmarks" are not honoured: a run always moves
+          "'[", "']" and the marks the new text displaces. Tracked in
+          issue #21.
         • ":Bang" tells "the last Visual selection" from "these lines" using
           the range, the mode of that selection and the typed command line.
           An invocation that was not typed, from a mapping, <Cmd> or
