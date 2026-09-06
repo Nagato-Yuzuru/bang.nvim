@@ -768,7 +768,7 @@ T["#8 a command is remembered as soon as it runs, whatever its exit code"] = fun
   eq(H.get_lines(child), { "one", "false" })
 end
 
-T["#8 a run that never reaches the shell is not remembered"] = function()
+T["#8 a run refused on its region is not remembered"] = function()
   H.setup(child, { expand_bang = true })
   H.set_lines(child, { "one", "two" })
   eq(H.run(child, "echo first", H.linewise(1, 1)).ok, true)
@@ -777,6 +777,19 @@ T["#8 a run that never reaches the shell is not remembered"] = function()
   local res = H.run(child, "echo 'x!y'", H.linewise(2, 2))
   eq(res.ok, true)
   eq(H.get_lines(child)[2], "xecho firsty")
+end
+
+T["#8 a run whose shell cannot start is remembered, as `:!!` replays it"] = function()
+  -- Oracle: `:!echo x` with 'shell' pointing nowhere fails, and `:!!` still
+  -- runs `echo x` once 'shell' is back (#26).
+  H.setup(child, { expand_bang = true })
+  H.set_lines(child, { "one", "two" })
+  child.o.shell = "/definitely/not/a/shell"
+  eq(H.run(child, "echo started", H.linewise(1, 1)).ok, false)
+  child.o.shell = "/bin/sh"
+  local res = H.run(child, "echo 'x!y'", H.linewise(2, 2))
+  eq(res.ok, true)
+  eq(H.get_lines(child), { "one", "xecho startedy" })
 end
 
 -- §12b Review round 1 adjudications ----------------------------------------

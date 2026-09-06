@@ -233,19 +233,6 @@ function M.opfunc(motion)
   prompt(buf, region, current.capture.visual)
 end
 
----The range text of a command line: what is left of the command name once the
----modifiers are gone. A range never starts with a letter, so a leading word can
----only be a modifier -- and a modifier is not a range (F6).
----@param prefix string
----@return string
-local function range_text(prefix)
-  local rest = prefix:gsub("^%s*:*%s*", "")
-  while rest:match("^%a") do
-    rest = rest:gsub("^%a+!?%s*:*%s*", "")
-  end
-  return rest
-end
-
 ---Whether the `:` history holds this very invocation, and if so whether the
 ---user typed the plain Visual range. Returns nil when the entry belongs to
 ---something else -- a mapping, `<Cmd>`, `vim.cmd`, or an empty history (R2).
@@ -275,7 +262,7 @@ local function typed_visual_range(opts)
   end
   -- `'<;'>` and `'<,'>+0` are different ranges from the plain marks, and are
   -- linewise like any other range (F6).
-  return range_text(entry:sub(1, name - 1)):match("^'<%s*,%s*'>%s*$") ~= nil
+  return history.range_text(entry:sub(1, name - 1)):match("^'<%s*,%s*'>%s*$") ~= nil
 end
 
 ---The blockwise geometry for a `:Bang` on `buf`. Read live when the selection is
@@ -435,8 +422,8 @@ end
 ---The default keys, each with the global mapping that holds it right now.
 ---`rhs` is the `<Plug>` name the plugin would create; `map` is what
 ---`nvim_get_keymap()` reports for the key, or nil when nothing owns it.
----Exported so that `:checkhealth bang` judges the keys by the same table and
----the same lookup the plugin itself decides with (#17).
+---`default_keymaps()` creates and removes the keys from this list, and
+---`:checkhealth bang` judges them by it, so the two cannot disagree (#17).
 ---@return { mode: string, lhs: string, rhs: string, map: table|nil }[]
 function M.default_keymap_state()
   local state = {}
@@ -453,19 +440,16 @@ end
 ---the user is left alone, and only a mapping that is still ours is removed (R7).
 ---@param enable boolean
 function M.default_keymaps(enable)
-  for _, map in ipairs(DEFAULT_KEYMAPS) do
-    for _, mode in ipairs(map.modes) do
-      local existing = global_map(mode, map.lhs)
-      if enable then
-        if not existing then
-          vim.keymap.set(mode, map.lhs, map.rhs, {
-            remap = true,
-            desc = "Filter through a shell command",
-          })
-        end
-      elseif existing and existing.rhs == map.rhs then
-        pcall(vim.keymap.del, mode, map.lhs)
+  for _, key in ipairs(M.default_keymap_state()) do
+    if enable then
+      if not key.map then
+        vim.keymap.set(key.mode, key.lhs, key.rhs, {
+          remap = true,
+          desc = "Filter through a shell command",
+        })
       end
+    elseif key.map and key.map.rhs == key.rhs then
+      pcall(vim.keymap.del, key.mode, key.lhs)
     end
   end
 end
