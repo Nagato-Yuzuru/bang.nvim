@@ -614,13 +614,46 @@ end
 
 -- §12e Issue #8 rulings -----------------------------------------------------
 
+--- What an operator left behind: the buffer, and `'[`/`']` around the region it
+--- worked on.
+local function outcome()
+  return child.lua_get([[{
+    lines = vim.api.nvim_buf_get_lines(0, 0, -1, true),
+    open = vim.fn.getpos("'["),
+    close = vim.fn.getpos("']"),
+  }]])
+end
+
+--- Run Vim's own `operator` over the selection `keys` makes in `lines`.
+---
+--- Where a ruling names one of Vim's operators, the case runs it instead of
+--- restating what it does: `gU` decides which cells a block covers, and
+--- blockwise `d` decides which column an exclusive block stops at.
+local function vim_does(lines, keys, operator)
+  child.cmd("enew!")
+  H.set_lines(child, lines)
+  child.type_keys(unpack(keys))
+  child.type_keys(operator)
+  return outcome()
+end
+
+--- The same selection, filtered through `g!` with `cmd`.
+local function bang_does(lines, keys, cmd)
+  H.stub_input(child, { cmd })
+  child.cmd("enew!")
+  H.set_lines(child, lines)
+  child.type_keys(unpack(keys))
+  child.type_keys("g!")
+  return outcome()
+end
+
 T["#8 v$ filters to the last character and keeps the line break"] = function()
   -- Vim's own oracles disagree -- `v$d` and `v$c` join the lines, `v$y` yanks
   -- the break, `v$gU` leaves it -- and the ruling follows `gU`.
-  H.stub_input(child, { "tr a-z A-Z" })
-  H.set_lines(child, { "abc", "def" })
-  child.type_keys("gg", "0", "v", "$", "g!")
-  eq(H.get_lines(child), { "ABC", "def" })
+  local lines, keys = { "abc", "def" }, { "gg", "0", "v", "$" }
+  local expected = vim_does(lines, keys, "gU")
+  eq(expected.lines, { "ABC", "def" }, { fail_reason = "gU no longer keeps the line break" })
+  eq(bang_does(lines, keys, "tr a-z A-Z").lines, expected.lines)
 end
 
 T["#8 a block edge inside a <Tab> sends the whole tab"] = function()
@@ -628,51 +661,63 @@ T["#8 a block edge inside a <Tab> sends the whole tab"] = function()
   -- the tab belongs to the block whole, as `gU` treats it, and the "a" before
   -- it is left alone. Splitting it into spaces, as `c` and `d` do, would change
   -- bytes outside the region.
+  --
+  -- `gU` cannot produce this text: a tab has no case, and only `tr` shows that
+  -- the whole tab reached the command. What the oracle settles here is the
+  -- region, so that is what is compared -- `'[` and `']` bracket exactly the
+  -- bytes `gU` covered.
   child.o.tabstop = 8
-  H.stub_input(child, { "tr '\\t' X" })
-  H.set_lines(child, { "a\tbcd", "efghijklmno" })
-  child.type_keys("2G", "0", "3l", "<C-v>", "7l", "k", "g!")
-  eq(H.get_lines(child), { "aXbcd", "efghijklmno" })
+  local lines, keys = { "a\tbcd", "efghijklmno" }, { "2G", "0", "3l", "<C-v>", "7l", "k" }
+  local expected = vim_does(lines, keys, "gU")
+  local got = bang_does(lines, keys, "tr '\\t' X")
+  eq({ got.open, got.close }, { expected.open, expected.close })
+  eq(got.lines, { "aXbcd", "efghijklmno" })
 end
 
 T["#8 g! on an exclusive block leaves out the cursor column"] = function()
   -- Oracle: with 'selection' = "exclusive", `l<C-v>ld` on "1234" gives "134".
+  -- `d` clears the block, so it is a zero-output run that compares to it
+  -- directly; the filtered run then fills the same column back in.
   child.o.selection = "exclusive"
-  H.stub_input(child, { "tr 0-9 a-j" })
-  H.set_lines(child, { "1234", "5678" })
-  child.type_keys("gg", "0", "l", "<C-v>", "jl", "g!")
-  eq(H.get_lines(child), { "1c34", "5g78" })
+  local lines, keys = { "1234", "5678" }, { "gg", "0", "l", "<C-v>", "jl" }
+  local expected = vim_does(lines, keys, "d")
+  eq(expected.lines, { "134", "578" }, {
+    fail_reason = "exclusive d no longer stops before the cursor column",
+  })
+  eq(bang_does(lines, keys, "true"), expected)
+  eq(bang_does(lines, keys, "tr 0-9 a-j").lines, { "1c34", "5g78" })
 end
 
 T["#8 an exclusive block keeps a wide character on its right edge whole"] = function()
   -- Vim leaves the later corner's character out only when the block stays at
   -- least as wide as the earlier corner's character without it. Every result
-  -- here is what `gU` gives on the same keys.
+  -- here is what `gU` gives on the same keys, so `gU` is what the case runs.
   child.o.selection = "exclusive"
-  H.stub_input(child, { "tr a-z A-Z" })
 
   -- The cursor lands on "あ" (cells 1-2) below "a" (cell 1): too narrow to
   -- exclude, so the block is cells 1-2.
-  H.set_lines(child, { "ab", "あ" })
-  child.type_keys("gg", "0", "<C-v>", "j", "g!")
-  eq(H.get_lines(child), { "AB", "あ" })
+  local lines, keys = { "ab", "あ" }, { "gg", "0", "<C-v>", "j" }
+  local expected = vim_does(lines, keys, "gU")
+  eq(expected.lines, { "AB", "あ" })
+  eq(bang_does(lines, keys, "tr a-z A-Z").lines, expected.lines)
 
   -- The cursor lands on "あ" (cells 3-4) below "c" (cell 3): same, cells 3-4.
-  H.stub_input(child, { "tr a-z A-Z" })
-  H.set_lines(child, { "abcd", "abあ" })
-  child.type_keys("gg", "0", "2l", "<C-v>", "j", "g!")
-  eq(H.get_lines(child), { "abCD", "abあ" })
+  lines, keys = { "abcd", "abあ" }, { "gg", "0", "2l", "<C-v>", "j" }
+  expected = vim_does(lines, keys, "gU")
+  eq(expected.lines, { "abCD", "abあ" })
+  eq(bang_does(lines, keys, "tr a-z A-Z").lines, expected.lines)
 end
 
 T["#8 an exclusive block keeps a <Tab> on its right edge whole"] = function()
+  -- The cursor lands inside the tab (cells 3-8) below "c" (cell 3): the block
+  -- is cells 3-8, so line 1 loses its case on "cd" and the tab stays. As with
+  -- its siblings, `gU` on the same keys is what says so.
   child.o.tabstop = 8
   child.o.selection = "exclusive"
-  H.stub_input(child, { "tr a-z A-Z" })
-  -- The cursor lands inside the tab (cells 3-8) below "c" (cell 3): the block
-  -- is cells 3-8, so line 1 loses its case on "cd" and the tab stays.
-  H.set_lines(child, { "abcd", "ab\tz" })
-  child.type_keys("gg", "0", "2l", "<C-v>", "j", "g!")
-  eq(H.get_lines(child), { "abCD", "ab\tz" })
+  local lines, keys = { "abcd", "ab\tz" }, { "gg", "0", "2l", "<C-v>", "j" }
+  local expected = vim_does(lines, keys, "gU")
+  eq(expected.lines, { "abCD", "ab\tz" })
+  eq(bang_does(lines, keys, "tr a-z A-Z").lines, expected.lines)
 end
 
 T["#8 an exclusive block widened leftwards by a <Tab> matches gU"] = function()
@@ -681,10 +726,10 @@ T["#8 an exclusive block widened leftwards by a <Tab> matches gU"] = function()
   -- same keys gives exactly this.
   child.o.tabstop = 8
   child.o.selection = "exclusive"
-  H.stub_input(child, { "tr a-z A-Z" })
-  H.set_lines(child, { "aあqあzqz", "bazq", "\tあ b" })
-  child.type_keys("gg", "0", "2l", "<C-v>", "2j", "g!")
-  eq(H.get_lines(child), { "AあQあZQz", "BAZQ", "\tあ b" })
+  local lines, keys = { "aあqあzqz", "bazq", "\tあ b" }, { "gg", "0", "2l", "<C-v>", "2j" }
+  local expected = vim_does(lines, keys, "gU")
+  eq(expected.lines, { "AあQあZQz", "BAZQ", "\tあ b" })
+  eq(bang_does(lines, keys, "tr a-z A-Z").lines, expected.lines)
 end
 
 return T
