@@ -279,6 +279,11 @@ Known gaps ~
         • ":lockmarks" and ":keepmarks" are not honoured: a run always moves
           "'[", "']" and the marks the new text displaces. Tracked in
           issue #21.
+        • With 'virtualedit' on, "." after a blockwise run can replay the
+          block a few cells wider than Vim's own redo would, when a corner
+          of the original block sat on a <Tab> or a wide character: Vim
+          stops taking that character whole under 'virtualedit', and the
+          width "." remembers still does. Tracked in issue #36.
         • ":Bang" tells "the last Visual selection" from "these lines" using
           the range, the mode of that selection and the typed command line.
           An invocation that was not typed, from a mapping, <Cmd> or
