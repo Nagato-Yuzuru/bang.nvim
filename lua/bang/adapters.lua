@@ -39,13 +39,14 @@ local function consume()
   return current
 end
 
----What `.` replays: the operator's own last command, and the shape of the last
----block it was invoked on. The command is deliberately separate from the
----engine's `prev_cmd`, so a `:Bang` in between does not change what `.` does.
----The shape is remembered because Vim's redo rebuilds the block at the cursor
----but lets the opfunc read back neither its width nor `$` (D3.2).
----@type { cmd: string|nil, block: bang.BlockShape|nil }
-local redo = { cmd = nil, block = nil }
+---What `.` replays: the operator's own last command, with the shape of the
+---block it ran on when it was blockwise. One value, so the two cannot come
+---apart (#24). The command is deliberately separate from the engine's
+---`prev_cmd`, so a `:Bang` in between does not change what `.` does. The shape
+---is remembered because Vim's redo rebuilds the block at the cursor but lets
+---the opfunc read back neither its width nor `$` (D3.2).
+---@type { cmd: string, shape: bang.BlockShape|nil }|nil
+local redo = nil
 
 ---What the last blockwise Visual selection looked like while it was live. Both
 ---the `$` flag and the two corners are reset by the time a `:Bang` callback runs
@@ -100,13 +101,16 @@ local function block_region(corners)
   }
 end
 
----The block corners from `'<`/`'>`, for a block with no live selection to
----read: a forced motion (`g!<C-v>j`) is turned into a Visual block by Vim and
----recorded in the marks. The marks cannot tell `$` from an overhang, so such a
----block is never ragged.
+---The block corners from a pair of marks, for a block with no live selection
+---to read: a forced motion (`g!<C-v>j`) is turned into a Visual block by Vim
+---and recorded in `'<`/`'>`; a `.` with no shape to replay gets the block Vim
+---rebuilt at the cursor from `'[`/`']` (#24). The marks cannot tell `$` from
+---an overhang, so such a block is never ragged.
+---@param from_mark string
+---@param to_mark string
 ---@return bang.BlockHint
-local function block_from_marks()
-  local from, to = fn.getpos("'<"), fn.getpos("'>")
+local function block_from_marks(from_mark, to_mark)
+  local from, to = fn.getpos(from_mark), fn.getpos(to_mark)
   return {
     anchor = { lnum = from[2], col = from[3] + from[4] },
     cursor = { lnum = to[2], col = to[3] + to[4] },
@@ -152,7 +156,8 @@ end
 ---@param buf integer
 ---@param region bang.Region
 ---@param visual boolean Whether the region came from a Visual selection.
-local function prompt(buf, region, visual)
+---@param shape bang.BlockShape|nil What `.` replays for a block; nil for any other region.
+local function prompt(buf, region, visual, shape)
   local tick = api.nvim_buf_get_changedtick(buf)
   vim.ui.input({ prompt = "!", completion = "shellcmdline" }, function(input)
     if input == nil or input == "" then
@@ -162,10 +167,15 @@ local function prompt(buf, region, visual)
       return
     end
     local ok, _, expanded = require("bang").run(input, region, { buf = buf })
-    -- Remembered as the shell saw it, so `%` keeps meaning the buffer the
-    -- operator ran in (R17); the repeat then skips expansion rather than
-    -- running it a second time (F5).
-    redo.cmd = expanded or redo.cmd
+    -- Remembered once expanded, whether the run then succeeded, failed or was
+    -- refused on its region: `%` keeps meaning the buffer the operator ran in
+    -- (R17), and the repeat skips expansion rather than running it a second
+    -- time (F5). The shape travels with the command as one value: written
+    -- apart, a cancelled prompt left `.` with the last command and this
+    -- selection's width (#24).
+    if expanded then
+      redo = { cmd = expanded, shape = shape }
+    end
     if ok then
       -- With the Visual range, so that running the entry again from `q:` acts
       -- on the selection (D9.2).
@@ -205,32 +215,36 @@ function M.opfunc(motion)
 
   if current.state == "repeat" then
     -- Reuse the operator's own last command, without prompting.
-    if not redo.cmd then
+    if not redo then
       return
     end
     local region
     if rtype ~= regions.BLOCK then
       region = marks_region(buf, rtype)
-    elseif redo.block then
-      region = redo_block_region(redo.block)
+    elseif redo.shape then
+      region = redo_block_region(redo.shape)
     else
-      region = block_region(block_from_marks())
+      -- The remembered run was not blockwise, so there is no shape to replay.
+      -- Vim's redo rebuilt a block at the cursor, after a cancelled block
+      -- prompt, and `'[`/`']` describe it; `'<`/`'>` would be the cancelled
+      -- selection (#24).
+      region = block_region(block_from_marks("'[", "']"))
     end
     require("bang").run(redo.cmd, region, { buf = buf, expanded = true })
     return
   end
 
-  local region
+  local region, shape
   if rtype == regions.BLOCK then
     -- A live selection's corners were captured by the expr mapping; a forced
     -- motion has none, and the marks Vim just set describe it.
-    local corners = current.capture.block or block_from_marks()
+    local corners = current.capture.block or block_from_marks("'<", "'>")
     region = block_region(corners)
-    redo.block = regions.block_shape(buf, corners)
+    shape = regions.block_shape(buf, corners)
   else
     region = marks_region(buf, rtype)
   end
-  prompt(buf, region, current.capture.visual)
+  prompt(buf, region, current.capture.visual, shape)
 end
 
 ---Whether the `:` history holds this very invocation, and if so whether the
@@ -280,7 +294,7 @@ local function block_geometry(buf)
   if record and record.anchor then
     return { anchor = record.anchor, cursor = record.cursor, ragged = record.ragged }
   end
-  local geometry = block_from_marks()
+  local geometry = block_from_marks("'<", "'>")
   geometry.ragged = record ~= nil and record.ragged or false
   return geometry
 end

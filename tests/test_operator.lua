@@ -287,6 +287,43 @@ T["D4.2 a cancelled prompt leaves the repeat state alone"] = function()
   eq(H.get_lines(child), { "ONE", "two", "THREE" })
 end
 
+T["#24 a cancelled prompt leaves the block `.` replays alone"] = function()
+  -- A three-column block runs; a one-column block's prompt is cancelled; `.`
+  -- must replay the three columns of the run, not the one of the cancel.
+  H.stub_input(child, { "tr a-z A-Z", false })
+  H.set_lines(child, { "abcdefgh", "abcdefgh", "abcdefgh" })
+  child.type_keys("gg", "0", "<C-v>", "2l", "g!")
+  child.type_keys("2G", "0", "<C-v>", "g!")
+  eq(H.get_lines(child), { "ABCdefgh", "abcdefgh", "abcdefgh" })
+  child.type_keys("3G", "0", ".")
+  eq(H.get_lines(child), { "ABCdefgh", "abcdefgh", "ABCdefgh" })
+end
+
+T["#24 a cancelled prompt leaves a `$` block's `.` alone"] = function()
+  H.stub_input(child, { "tr a-z A-Z", false })
+  H.set_lines(child, { "abcdefgh", "abcdefgh", "abcdefgh" })
+  child.type_keys("gg", "0", "<C-v>", "$", "g!")
+  child.type_keys("2G", "0", "<C-v>", "l", "g!")
+  eq(H.get_lines(child), { "ABCDEFGH", "abcdefgh", "abcdefgh" })
+  child.type_keys("3G", "0", ".")
+  eq(H.get_lines(child), { "ABCDEFGH", "abcdefgh", "ABCDEFGH" })
+end
+
+T["#24 after a cancelled block prompt, `.` of a linewise run lands at the cursor"] = function()
+  -- Vim's redo replays the cancelled block motion at the cursor. The block is
+  -- the one it rebuilt there, read from `'[`/`']`, never the cancelled
+  -- selection's lines. With no remembered shape the width is `']`'s, so on a
+  -- last line shorter than the cancelled block it narrows; a one-line block
+  -- keeps the two equal here.
+  H.stub_input(child, { "tr a-z A-Z", false })
+  H.set_lines(child, { "line1aaa", "line2bbb", "line3ccc", "line4ddd" })
+  child.type_keys("gg", "g!!")
+  child.type_keys("2G", "0", "<C-v>", "3l", "g!")
+  eq(H.get_lines(child), { "LINE1AAA", "line2bbb", "line3ccc", "line4ddd" })
+  child.type_keys("4G", "0", ".")
+  eq(H.get_lines(child), { "LINE1AAA", "line2bbb", "line3ccc", "LINE4ddd" })
+end
+
 T["D4.3 a deferred prompt still filters the captured region"] = function()
   H.stub_input(child, { "tr a-z A-Z" }, { defer = true })
   H.set_lines(child, { "one", "two" })
