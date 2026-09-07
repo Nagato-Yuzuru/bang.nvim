@@ -13,11 +13,6 @@ local Helpers = {}
 Helpers.root = vim.fn.fnamemodify(debug.getinfo(1, "S").source:sub(2), ":p:h:h")
 Helpers.fixtures = Helpers.root .. "/tests/fixtures"
 
---- Stands in for `vim.v.maxcol` inside a region column (DESIGN.md §3.4: "to end
---- of line"). The real value cannot be handed to the child as-is without the
---- parent and the child agreeing on it, so `Helpers.run()` substitutes it there.
-Helpers.MAXCOL = -1
-
 -- Buffers ------------------------------------------------------------------
 
 function Helpers.set_lines(child, lines)
@@ -32,26 +27,32 @@ end
 
 --- Build the public region table of DESIGN.md §3.4.
 ---
---- Columns are 1-based byte columns in the `getregionpos()` vocabulary;
---- `Helpers.MAXCOL` means "to end of line".
-function Helpers.region(rtype, start_lnum, start_col, finish_lnum, finish_col)
+--- Both ends are `getpos()`-shaped: a 1-based line, a 1-based byte column and
+--- the cells of virtual space past it.
+function Helpers.region(kind, anchor_lnum, anchor_col, cursor_lnum, cursor_col, ragged)
   return {
-    type = rtype,
-    start = { lnum = start_lnum, col = start_col },
-    finish = { lnum = finish_lnum, col = finish_col },
+    kind = kind,
+    anchor = { lnum = anchor_lnum, col = anchor_col, off = 0 },
+    cursor = { lnum = cursor_lnum, col = cursor_col, off = 0 },
+    ragged = ragged,
   }
 end
 
-function Helpers.charwise(start_lnum, start_col, finish_lnum, finish_col)
-  return Helpers.region("v", start_lnum, start_col, finish_lnum, finish_col)
+function Helpers.charwise(anchor_lnum, anchor_col, cursor_lnum, cursor_col)
+  return Helpers.region("char", anchor_lnum, anchor_col, cursor_lnum, cursor_col)
 end
 
-function Helpers.linewise(start_lnum, finish_lnum)
-  return Helpers.region("V", start_lnum, 1, finish_lnum, Helpers.MAXCOL)
+function Helpers.linewise(anchor_lnum, cursor_lnum)
+  return Helpers.region("line", anchor_lnum, 1, cursor_lnum, 1)
 end
 
-function Helpers.blockwise(start_lnum, start_col, finish_lnum, finish_col)
-  return Helpers.region("\22", start_lnum, start_col, finish_lnum, finish_col)
+function Helpers.blockwise(anchor_lnum, anchor_col, cursor_lnum, cursor_col)
+  return Helpers.region("block", anchor_lnum, anchor_col, cursor_lnum, cursor_col)
+end
+
+--- A blockwise region made with `$`: every row ends at its own last byte.
+function Helpers.ragged(anchor_lnum, anchor_col, cursor_lnum, cursor_col)
+  return Helpers.region("block", anchor_lnum, anchor_col, cursor_lnum, cursor_col, true)
 end
 
 --- What the built-in `!` leaves in the buffer for the output `a\rb\n`: with
@@ -263,10 +264,6 @@ function Helpers.run(child, cmd, region, opts)
   return child.lua(
     [[
       local cmd, region, opts = ...
-      if region ~= nil then
-        if region.start.col == -1 then region.start.col = vim.v.maxcol end
-        if region.finish.col == -1 then region.finish.col = vim.v.maxcol end
-      end
       local ok, msg = require("bang").run(cmd, region, opts)
       return { ok = ok, msg = msg }
     ]],
@@ -282,10 +279,6 @@ function Helpers.run_pcall(child, cmd, region, opts)
   return child.lua(
     [[
       local cmd, region, opts = ...
-      if region ~= nil then
-        if region.start.col == -1 then region.start.col = vim.v.maxcol end
-        if region.finish.col == -1 then region.finish.col = vim.v.maxcol end
-      end
       local called, ok, msg = pcall(require("bang").run, cmd, region, opts)
       if not called then
         return { threw = true, msg = tostring(ok) }

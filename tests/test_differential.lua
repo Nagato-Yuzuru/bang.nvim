@@ -30,9 +30,8 @@ local child = MiniTest.new_child_neovim()
 
 -- The corpus. `keys` ends in Visual mode with the selection made.
 --
--- `api_maxcol` marks a selection the mark pair cannot describe on its own: after
--- `CTRL-V $` the `'>` column is the cursor's, so the Lua API needs the explicit
--- "to end of line" column instead.
+-- `ragged` marks a selection the mark pair cannot describe on its own: after
+-- `CTRL-V $` the `'>` column is the cursor's, so the Lua API needs the flag.
 local CORPUS = {
   ["char single line"] = {
     lines = { "password: hunter2" },
@@ -129,7 +128,7 @@ local CORPUS = {
   ["ragged block"] = {
     lines = { "abcdef", "ab", "abcd" },
     keys = { "gg", "0", "l", "<C-v>", "2j", "$" },
-    api_maxcol = true,
+    ragged = true,
   },
   -- #25's three shapes: a row the block never reaches, and a row whose end it
   -- runs past, are the rows `'[` and `']` used to be a column off on.
@@ -144,12 +143,19 @@ local CORPUS = {
     lines = { "abcdefgh", "ab" },
     keys = { "gg", "0", "4l", "<C-v>", "l", "j" },
   },
+  ["block over multibyte lines whose first line it does not reach"] = {
+    -- `'[` lands past the end of a multibyte first row, so the cursor is
+    -- clamped back into that row -- onto a continuation byte, unless it is
+    -- snapped to the start of the character it landed in (#22).
+    lines = { "ab文", "cdefghij", "klmnopqr" },
+    keys = { "3G", "0", "4l", "<C-v>", "l", "kk" },
+  },
   ["ragged block whose last line is the longest"] = {
     -- A `$` block runs past every line's end, the longest one included, so `']`
     -- lands one column past its last byte and not on it.
     lines = { "abcd", "abcdefgh" },
     keys = { "gg", "0", "l", "<C-v>", "j", "$" },
-    api_maxcol = true,
+    ragged = true,
   },
 }
 
@@ -176,14 +182,20 @@ local LABELS = {
   "block over a column of tab-indented code",
   "block over full-width CJK lines",
   "ragged block",
+  "block over multibyte lines whose first line it does not reach",
   "block whose first line stops before the block",
   "block whose last line stops before the block",
   "ragged block whose last line is the longest",
 }
 
+-- Every entry runs under both 'selection' values. `gU` obeys 'selection' too,
+-- so it stays the oracle, and the region now carries the setting itself rather
+-- than the engine reading the option (#22).
 local params = {}
 for _, label in ipairs(LABELS) do
-  params[#params + 1] = { label }
+  for _, selection in ipairs({ "inclusive", "exclusive" }) do
+    params[#params + 1] = { label, selection }
+  end
 end
 
 local T = MiniTest.new_set({
@@ -208,24 +220,25 @@ end
 
 --- The region the marks describe, in the public vocabulary of D3.4.
 ---
---- `col + off` for both ends is what F7 requires so that a `virtualedit` anchor
---- past the end of a line survives.
-local function region_from_marks(api_maxcol)
+--- `'<`/`'>` are already `getpos()`-shaped, `coladd` included, so a 'virtualedit'
+--- anchor past the end of a line survives with no arithmetic (F7). `$` and the
+--- 'selection' in force are the two things they cannot say, and the caller
+--- passes both.
+local function region_from_marks(ragged, selection)
   return child.lua(
     [[
-      local api_maxcol = ...
-      local s, e = vim.fn.getpos("'<"), vim.fn.getpos("'>")
-      local finish_col = e[3] + e[4]
-      if api_maxcol then
-        finish_col = vim.v.maxcol
-      end
+      local ragged, selection = ...
+      local a, c = vim.fn.getpos("'<"), vim.fn.getpos("'>")
+      local kinds = { v = "char", V = "line", ["\22"] = "block" }
       return {
-        type = vim.fn.visualmode(),
-        start = { lnum = s[2], col = s[3] + s[4] },
-        finish = { lnum = e[2], col = finish_col },
+        kind = kinds[vim.fn.visualmode()],
+        anchor = { lnum = a[2], col = a[3], off = a[4] },
+        cursor = { lnum = c[2], col = c[3], off = c[4] },
+        ragged = ragged,
+        exclusive = selection == "exclusive",
       }
     ]],
-    { api_maxcol == true }
+    { ragged == true, selection or "inclusive" }
   )
 end
 
@@ -299,9 +312,12 @@ end
 T["differential"] = MiniTest.new_set({ parametrize = params })
 
 T["differential"]["F2 every entry point matches Vim's own operator on the same selection"] = function(
-  label
+  label,
+  selection
 )
   local entry = CORPUS[label]
+  child.o.selection = selection
+  label = ("%s (selection=%s)"):format(label, selection)
 
   -- The oracle: Vim filters the selection itself.
   local expected = oracle(entry)
@@ -326,7 +342,7 @@ T["differential"]["F2 every entry point matches Vim's own operator on the same s
   -- `run()` with the region rebuilt from the marks.
   select_region(entry)
   child.type_keys("<Esc>")
-  local region = region_from_marks(entry.api_maxcol)
+  local region = region_from_marks(entry.ragged, selection)
   child.cmd("enew!")
   H.set_lines(child, entry.lines)
   local res = H.run(child, "tr a-z A-Z", region)
@@ -363,6 +379,33 @@ T["D3.2 . after a blockwise g! matches Vim's own redo of gU"] = function()
       { "gg", "0", "l", "<C-v>", "l", "j" },
       { "4G", "0", "l" },
     },
+    -- A far line shorter than the block: `']` stops at its own end.
+    {
+      { "abcdef", "ab", "", "abcdef", "ab" },
+      { "gg", "0", "l", "<C-v>", "j", "2l" },
+      { "4G", "0", "l" },
+    },
+    -- The same, with a <Tab> the block's edge lands inside.
+    {
+      { "a\tbcd", "e\t", "", "a\tbcd", "e\t" },
+      { "gg", "0", "3l", "<C-v>", "j", "3l" },
+      { "4G", "0", "3l" },
+    },
+    -- The block stands past every row of text it was made on, so the drawing
+    -- width collapses to one column and only the corners still know it is three.
+    {
+      { "aba中文", "", "", " b" },
+      { "gg", "jj", "0", "<C-v>", "j", "llll" },
+      { "1G", "0" },
+    },
+    -- The block is one cell wide and lands on a line that starts with a <Tab>
+    -- eight cells wide. A repeated block keeps its width there; a block read
+    -- back from two corners would take the whole tab and everything under it.
+    {
+      { "\tab", "cd", "ef", "", "gh", "ij", "kl" },
+      { "5G", "0", "<C-v>", "2j" },
+      { "1G", "0" },
+    },
   }
   for i, c in ipairs(cases) do
     local lines, select, target = c[1], c[2], c[3]
@@ -387,6 +430,29 @@ T["D3.2 . after a blockwise g! matches Vim's own redo of gU"] = function()
       ),
     })
   end
+end
+
+T["D3.2 . repeats a virtualedit block at the cells its corner stood on"] = function()
+  -- The block's far corner stands inside the <Tab>, which only 'virtualedit'
+  -- allows. A block takes the character a corner sits *on* whole, but a corner
+  -- in virtual space sits on no character: it covers the one cell it stands on,
+  -- so the width `.` replays is four cells and not the tab's eight.
+  child.o.virtualedit = "all"
+  child.o.tabstop = 8
+  local lines = { "ab\tc", "", "wxyzwxyz" }
+  local entry = { lines = lines, keys = { "gg", "0", "<C-v>", "lll" } }
+
+  select_region(entry)
+  child.type_keys("gU")
+  child.type_keys("3G", "0", ".")
+  local expected = H.get_lines(child)
+  eq(expected, { "AB\tc", "", "WXYZwxyz" }, { fail_reason = "gU no longer repeats four cells" })
+
+  select_region(entry)
+  H.stub_input(child, { "tr a-z A-Z" })
+  child.type_keys("g!")
+  child.type_keys("3G", "0", ".")
+  eq(H.get_lines(child), expected, { fail_reason = ". after g! differs from . after gU" })
 end
 
 -- §12c F7 virtualedit -------------------------------------------------------
@@ -441,7 +507,7 @@ T["F7 virtualedit = block behaves the same as virtualedit = all"] = function()
   eq(H.get_lines(child), expected)
 end
 
--- §12d D-2 and the D-1 residual --------------------------------------------
+-- §12d D-2 and D-1 ---------------------------------------------------------
 
 T["D-2 a block over a tab-bearing line whose far line is short is filtered, not refused"] = function()
   -- The minimal shape from §12d: the far corner clamps to one past line 2's
@@ -492,19 +558,15 @@ T["D-2 no tab/CJK boundary is refused where gU accepts it"] = function()
   end
 end
 
-T["D-1 residual: a virtualedit block past a tab-led line diverges from gU"] = function()
-  -- KNOWN RESIDUAL, not a guarantee (§12d D-1, §12c F7): `col + off` mixes byte
-  -- and cell counts, so an anchor in virtual space past a line that begins with
-  -- a tab lands the block on the wrong columns. §12d rules this stays unfixed
-  -- for v0.1 and documented.
+T["D-1 a virtualedit block past a tab-led line matches gU"] = function()
+  -- §12d D-1 used to be a known residual: `col + off` mixed byte and cell
+  -- counts, so an anchor in virtual space past a line that begins with a tab
+  -- landed the block on the wrong columns, and the docs said so. `getregionpos()`
+  -- is handed the anchor's `coladd` as it stands and puts the block where gU
+  -- puts it, so these selections are a guarantee now rather than a residual.
   --
-  -- The residual is selection-sensitive (some past-EOL columns already land
-  -- right), so this pins the *documented fact* that it still exists somewhere:
-  -- at least one of these virtualedit + tab + past-EOL selections must still
-  -- disagree with gU. When every one matches, the residual is gone -- this test
-  -- trips, and that is the signal to delete the README/vimdoc residual line and
-  -- fold these selections into the differential corpus. It asserts a known bug,
-  -- never a guarantee.
+  -- Text only, for the reason the F7 cases give: under 'virtualedit' gU leaves
+  -- `'[`, `']` and the cursor in virtual space, which no byte column reproduces.
   child.o.virtualedit = "all"
   child.o.tabstop = 8
   local probes = {
@@ -513,36 +575,25 @@ T["D-1 residual: a virtualedit block past a tab-led line diverges from gU"] = fu
     { { "\tx", "\tabcdefgh" }, { "gg", "0", "$", "l", "<C-v>", "j", "2l" } },
     { { "\ta", "bcdefgh" }, { "gg", "0", "A", "<Esc>", "<C-v>", "j" } },
   }
-  local diverged, sample = 0, nil
-  for _, probe in ipairs(probes) do
+  for i, probe in ipairs(probes) do
     local entry = { lines = probe[1], keys = probe[2] }
 
     select_region(entry)
     child.type_keys("gU")
     local expected = H.get_lines(child)
+    neq(expected, probe[1], {
+      fail_reason = ("probe %d: gU changed nothing, so the comparison would be vacuous"):format(i),
+    })
 
     select_region(entry)
+    -- One g! per probe, and the shared hook stubs a single answer (D4.2: an
+    -- unanswered prompt cancels and writes nothing).
+    H.stub_input(child, { "tr a-z A-Z" })
     child.type_keys("g!")
-    local got = H.get_lines(child)
-
-    if not vim.deep_equal(got, expected) then
-      diverged = diverged + 1
-      sample = ("keys=%s got=%s gU=%s"):format(
-        vim.inspect(probe[2]),
-        vim.inspect(got),
-        vim.inspect(expected)
-      )
-    end
+    eq(H.get_lines(child), expected, {
+      fail_reason = ("probe %d: g! differs from gU (%s)"):format(i, vim.inspect(probe[2])),
+    })
   end
-
-  neq(diverged, 0, {
-    fail_reason = "every virtualedit+tab+past-EOL probe now matches gU: the D-1 residual "
-      .. "is gone. Delete the §12c F7 / §12d D-1 docs residual line and convert these "
-      .. "probes into corpus entries asserting equality.",
-  })
-  MiniTest.add_note(
-    ("D-1 residual present in %d/%d probes; %s"):format(diverged, #probes, sample or "")
-  )
 end
 
 -- §12f Issue #23 NUL width -------------------------------------------------

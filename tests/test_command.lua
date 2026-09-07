@@ -345,8 +345,8 @@ end
 -- §12c Review round 2 adjudications ----------------------------------------
 
 T["F4 (D5.3) a $ block built inside :normal! reaches each line's end"] = function()
-  -- `CursorMoved` does not fire inside `:normal!`, so a record kept only from
-  -- cursor movement misses the `$`.
+  -- Nothing observes the block while `:normal!` builds it, so `$` is read where
+  -- it survives to: the ModeChanged that ends the block, `<Esc>` included.
   H.set_lines(child, { "abcdef", "ab", "abcd" })
   child.lua([[
     vim.cmd("normal! " .. vim.api.nvim_replace_termcodes("gg0l<C-v>2j$<Esc>", true, false, true))

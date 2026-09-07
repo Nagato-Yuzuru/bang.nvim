@@ -68,11 +68,24 @@ end
 ---@field expanded boolean|nil Internal: `cmd` has already been through `cmdline-special`
 ---expansion, so this run must not expand it again (F5). Set by the repeat path.
 
----@class bang.Region
----@field type "v"|"V"|"\22" Charwise, linewise or blockwise.
----@field start { lnum: integer, col: integer } 1-based line and byte column.
----@field finish { lnum: integer, col: integer } Inclusive end; `col = vim.v.maxcol` means end of line.
----@field block bang.BlockHint|nil Internal: how a blockwise adapter names the block's columns (D-2).
+---@class bang.Position A position as `getpos()` reports one.
+---@field lnum integer 1-based line number.
+---@field col integer 1-based byte column.
+---@field off integer|nil Cells of virtual space past that byte, as 'virtualedit'
+---leaves them in `getpos()`'s fourth element. Default 0.
+
+---@class bang.Region The two ends of a Visual selection, as `getpos()` names them.
+---@field kind "char"|"line"|"block"
+---@field anchor bang.Position One end.
+---@field cursor bang.Position The other end.
+---@field exclusive boolean|nil Leave the character `cursor` names out, as
+---'selection' = "exclusive" does. Default false, and the region's own to state:
+---`run()` does not read the option.
+---@field ragged boolean|nil Blockwise `$`: every row ends at its own last byte.
+---@field width integer|nil Blockwise only: the block is this many cells wide
+---from `anchor`, and `cursor` gives only its last line. This is how Vim repeats
+---a block with `.`, where the marks cannot say how far right it reached (D3.2).
+---1 to `v:maxcol`, and not together with `exclusive`.
 
 ---Filter `region` through `cmd` and replace it with the output.
 ---

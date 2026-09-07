@@ -55,7 +55,7 @@ local function random_buffer()
     local chars = random_line()
     lines[i] = table.concat(chars)
     local starts, ends = columns(chars)
-    cols[i] = { n = #chars, starts = starts, ends = ends }
+    cols[i] = { n = #chars, len = #lines[i], starts = starts, ends = ends }
   end
   return lines, cols
 end
@@ -64,11 +64,15 @@ local function random_region(lines, cols, kind)
   local l1 = math.random(#lines)
   local l2 = math.random(l1, #lines)
 
-  if kind == "V" then
-    return { type = "V", start = { lnum = l1, col = 1 }, finish = { lnum = l2, col = H.MAXCOL } }
+  if kind == "line" then
+    return {
+      kind = "line",
+      anchor = { lnum = l1, col = 1, off = 0 },
+      cursor = { lnum = l2, col = 1, off = 0 },
+    }
   end
 
-  if kind == "\22" then
+  if kind == "block" then
     local widest = 0
     for _, line in ipairs(lines) do
       widest = math.max(widest, #line)
@@ -76,26 +80,45 @@ local function random_region(lines, cols, kind)
     -- Reach past the end of every line often enough to exercise the padding.
     local c1 = math.random(1, widest + 1)
     local c2 = math.random(c1, widest + 3)
-    return { type = "\22", start = { lnum = l1, col = c1 }, finish = { lnum = l2, col = c2 } }
+    return {
+      kind = "block",
+      anchor = { lnum = l1, col = c1, off = 0 },
+      cursor = { lnum = l2, col = c2, off = 0 },
+    }
   end
 
   local first, last = cols[l1], cols[l2]
   if first.n == 0 and last.n == 0 then
-    return { type = "v", start = { lnum = l1, col = 0 }, finish = { lnum = l2, col = 0 } }
+    return {
+      kind = "char",
+      anchor = { lnum = l1, col = 0, off = 0 },
+      cursor = { lnum = l2, col = 0, off = 0 },
+    }
   end
   local i = first.n == 0 and 0 or math.random(first.n)
   local j = last.n == 0 and 0 or math.random(last.n)
   if l1 == l2 and i ~= 0 and j ~= 0 and j < i then
     i, j = j, i
   end
+  local scol = i == 0 and 0 or first.starts[i]
+  local ecol = j == 0 and 0 or last.ends[j]
+  -- One past the last byte often enough to exercise it: it is a legal getpos()
+  -- column -- where the cursor stands after `A`, and where an exclusive `'>`
+  -- sits at the end of a line -- and the region holds no text of that line (#22).
+  if math.random(4) == 1 then
+    scol = first.len + 1
+  end
+  if math.random(4) == 1 then
+    ecol = last.len + 1
+  end
   return {
-    type = "v",
-    start = { lnum = l1, col = i == 0 and 0 or first.starts[i] },
-    finish = { lnum = l2, col = j == 0 and 0 or last.ends[j] },
+    kind = "char",
+    anchor = { lnum = l1, col = scol, off = 0 },
+    cursor = { lnum = l2, col = ecol, off = 0 },
   }
 end
 
-local KINDS = { "v", "V", "\22" }
+local KINDS = { "char", "line", "block" }
 
 local function generate(n, kinds)
   math.randomseed(SEED)
@@ -115,17 +138,13 @@ end
 local function drive(cases, cmd)
   return child.lua(
     [[
-      local cases, cmd, maxcol = ...
+      local cases, cmd = ...
       local bang = require("bang")
       local report = { n_ok = 0, fails = {} }
       for _, case in ipairs(cases) do
         vim.api.nvim_buf_set_lines(0, 0, -1, true, case.lines)
         local before = vim.api.nvim_buf_get_lines(0, 0, -1, true)
-        local region = vim.deepcopy(case.region)
-        if region.finish.col == maxcol then
-          region.finish.col = vim.v.maxcol
-        end
-        local called, ok, msg = pcall(bang.run, cmd, region, {})
+        local called, ok, msg = pcall(bang.run, cmd, vim.deepcopy(case.region), {})
         local after = vim.api.nvim_buf_get_lines(0, 0, -1, true)
         if called and ok == true then
           report.n_ok = report.n_ok + 1
@@ -140,7 +159,7 @@ local function drive(cases, cmd)
       end
       return { n_ok = report.n_ok, fails = report.fails, cases = cases }
     ]],
-    { cases, cmd, H.MAXCOL }
+    { cases, cmd }
   )
 end
 
@@ -201,14 +220,14 @@ T["F3/F8 cat is an identity on every region kind"] = function()
 end
 
 T["D7.2 sort permutes a linewise region and touches nothing outside it"] = function()
-  local report = drive(generate(N_SORT, { "V" }), "sort")
+  local report = drive(generate(N_SORT, { "line" }), "sort")
   eq(#report.fails, 0, {
     fail_reason = ("seed %d: run() raised\n%s"):format(SEED, vim.inspect(report.fails[1])),
   })
 
   local broken = {}
   for _, case in ipairs(report.cases) do
-    local l1, l2 = case.region.start.lnum, case.region.finish.lnum
+    local l1, l2 = case.region.anchor.lnum, case.region.cursor.lnum
     local outside_before, outside_after = {}, {}
     for i, line in ipairs(case.before) do
       if i < l1 or i > l2 then

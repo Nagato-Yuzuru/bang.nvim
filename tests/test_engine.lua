@@ -8,6 +8,7 @@ local H = dofile("tests/helpers.lua")
 
 local eq, neq = MiniTest.expect.equality, MiniTest.expect.no_equality
 local WARN, ERROR = 3, 4
+local NAN = 0 / 0
 
 local child = MiniTest.new_child_neovim()
 
@@ -41,6 +42,28 @@ T["D7.3 a charwise region spanning two lines is replaced as one span"] = functio
   local res = H.run(child, "tr bc BC", H.charwise(1, 2, 2, 1))
   eq(res.ok, true)
   eq(H.get_lines(child), { "aXB", "CYd" })
+end
+
+T["#22 a charwise corner one past a line's end is that line's own end"] = function()
+  -- `#line + 1` is a legal getpos() position -- it is where the cursor stands
+  -- after `A`, and where `'>` sits on an exclusive selection that ends a line.
+  -- `getregionpos()` answers column 0 for a line the region holds no text of,
+  -- which the write-back must not read as column 1: `cat` used to delete the
+  -- line down to it.
+  local cases = {
+    { { "abcdef", "ghijkl" }, 1, 7, 2, 3 },
+    { { "abcdef", "ghijkl" }, 1, 7, 1, 7 },
+    { { "abcdef", "ghijkl", "mnopqr" }, 2, 7, 3, 3 },
+    { { "ab", "", "cd" }, 1, 3, 3, 2 },
+  }
+  for i, case in ipairs(cases) do
+    local lines = case[1]
+    H.set_lines(child, lines)
+    local region = H.charwise(case[2], case[3], case[4], case[5])
+    local res = H.run(child, "cat", region)
+    eq(res.ok, true, { fail_reason = ("case %d: refused (%s)"):format(i, tostring(res.msg)) })
+    eq(H.get_lines(child), lines, { fail_reason = ("case %d: cat was not an identity"):format(i) })
+  end
 end
 
 T["D5.1 an empty line is an empty region at column 0"] = function()
@@ -99,7 +122,7 @@ end
 
 T["D5.3 a ragged block extends to each line's end"] = function()
   H.set_lines(child, { "abcdef", "ab", "abcd" })
-  local res = H.run(child, "tr a-z A-Z", H.blockwise(1, 2, 3, H.MAXCOL))
+  local res = H.run(child, "tr a-z A-Z", H.ragged(1, 2, 3, 5))
   eq(res.ok, true)
   eq(H.get_lines(child), { "aBCDEF", "aB", "aBCD" })
 end
@@ -661,6 +684,103 @@ T["D3.4 run is callable with no opts"] = function()
   eq(H.get_lines(child), { "ONE" })
 end
 
+T["#22 a column inside a multibyte character names the whole character"] = function()
+  -- A caller may hand in any byte column, and a region cut inside a character
+  -- would hand the command half of one: `tr` refuses that outright ("Illegal
+  -- byte sequence"), and what came back would not be text either. Columns 3 and
+  -- 5 are the second byte of each of the two characters of "x\u6587y" -- the region is
+  -- the characters they are part of.
+  H.set_lines(child, { "x\230\150\135y" })
+  local res = H.run(child, "tr a-z A-Z", H.charwise(1, 3, 1, 5))
+  eq(res.ok, true, { fail_reason = "refused (" .. tostring(res.msg) .. ")" })
+  eq(H.get_lines(child), { "x\230\150\135Y" })
+end
+
+T["#22 the cursor a run leaves is on a character, not inside one"] = function()
+  -- `'[` goes past the end of a first row the block never reaches, and the
+  -- cursor is clamped back into that row -- onto a continuation byte of its
+  -- last character unless the clamp snaps to the character's start. Read in the
+  -- same call as the run: Vim's own next pass through the main loop moves the
+  -- cursor off an invalid column, which would hide it.
+  child.o.tabstop = 8
+  H.set_lines(child, { "bzxbb\230\150\135", "\tz\228\184\173", "\228\184\173\ta" })
+  local cursor = child.lua(
+    [[
+      local region = ...
+      require("bang").run("tr a-z A-Z", region)
+      local pos = vim.fn.getpos(".")
+      local line = vim.api.nvim_buf_get_lines(0, pos[2] - 1, pos[2], true)[1]
+      return { pos = pos, byte = line:byte(pos[3]) }
+    ]],
+    { H.blockwise(3, 5, 1, 9) }
+  )
+  eq(cursor.pos, { 0, 1, 6, 0 }, { fail_reason = "where gU leaves the cursor for this block" })
+  neq(cursor.byte >= 0x80 and cursor.byte < 0xc0, true, {
+    fail_reason = ("cursor on a UTF-8 continuation byte (0x%02x)"):format(cursor.byte),
+  })
+end
+
+T["R8 (D3.4) a malformed region is reported, naming the field"] = function()
+  -- The region is the one argument a caller builds by hand, so every field of it
+  -- is checked before the shell is reached: a kind outside the three, an end
+  -- that is not there, and a column or an offset that is not a number. `"v"` is
+  -- the mode character the shape used to take, and is no longer a kind.
+  local ok = { lnum = 1, col = 1, off = 0 }
+  local cases = {
+    { name = "kind", region = { kind = "v", anchor = ok, cursor = ok } },
+    { name = "anchor", region = { kind = "char", cursor = ok } },
+    { name = "cursor", region = { kind = "char", anchor = ok, cursor = { lnum = 1, col = "x" } } },
+    {
+      name = "anchor",
+      region = { kind = "char", anchor = { lnum = 1, col = 1, off = "x" }, cursor = ok },
+    },
+    -- Virtual space runs to the right of its byte and nowhere else: a negative
+    -- offset used to pull a block's edge left and pad the rows with spaces.
+    {
+      name = "off",
+      region = { kind = "block", anchor = { lnum = 1, col = 1, off = -4 }, cursor = ok },
+    },
+    -- A fraction of a byte column means nothing, and `getregionpos()` raises
+    -- "not integral" on one, where the contract promises a report.
+    { name = "cursor", region = { kind = "char", anchor = ok, cursor = { lnum = 1, col = 1.5 } } },
+    { name = "cursor", region = { kind = "char", anchor = ok, cursor = { lnum = 1, col = NAN } } },
+    { name = "exclusive", region = { kind = "char", anchor = ok, cursor = ok, exclusive = 1 } },
+    -- A width is the block's own right edge, so it is blockwise, at least one
+    -- cell, whole, and cannot be combined with an end that decides the edge.
+    { name = "width", region = { kind = "char", anchor = ok, cursor = ok, width = 2 } },
+    { name = "width", region = { kind = "block", anchor = ok, cursor = ok, width = 0 } },
+    { name = "width", region = { kind = "block", anchor = ok, cursor = ok, width = 1.5 } },
+    {
+      name = "width",
+      region = { kind = "block", anchor = ok, cursor = ok, width = 2, exclusive = true },
+    },
+    -- A number too big to be a column reaches `getregionpos()` inside the region
+    -- type, where it is a raw E475 four levels down.
+    { name = "width", region = { kind = "block", anchor = ok, cursor = ok, width = 1e15 } },
+    -- A `width` region keeps its anchor where it is rather than sorting the two
+    -- ends, so the buffer bound has to look at both of them.
+    {
+      name = "outside",
+      region = {
+        kind = "block",
+        anchor = { lnum = 9, col = 1, off = 0 },
+        cursor = { lnum = 1, col = 1, off = 0 },
+        width = 2,
+      },
+    },
+  }
+  for i, case in ipairs(cases) do
+    H.set_lines(child, { "alpha" })
+    local res = H.run_pcall(child, "tr a-z A-Z", case.region)
+    eq(res.threw, false, { fail_reason = ("case %d: run() must not raise"):format(i) })
+    eq(res.ok, false, { fail_reason = ("case %d: run() must report failure"):format(i) })
+    neq(res.msg:find(case.name, 1, true), nil, {
+      fail_reason = ("case %d: %q must name %s"):format(i, tostring(res.msg), case.name),
+    })
+    eq(H.get_lines(child), { "alpha" }, { fail_reason = ("case %d: buffer touched"):format(i) })
+  end
+end
+
 -- §8.1 Configuration --------------------------------------------------------
 
 T["D8.1 setup merges its options into vim.g.bang"] = function()
@@ -1140,7 +1260,7 @@ T["#8 zero output clears a block instead of being refused"] = function()
     {
       { "abcdef", "abcd" },
       { "gg", "0", "l", "<C-v>", "j", "$" },
-      H.blockwise(1, 2, 2, H.MAXCOL),
+      H.ragged(1, 2, 2, 5),
       { "a", "a" },
     },
   }

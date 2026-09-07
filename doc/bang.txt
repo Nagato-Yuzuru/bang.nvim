@@ -182,13 +182,28 @@ require("bang").run({cmd}, {region}, {opts})
 
     Parameters: ~
       • {cmd}     (string) Shell command line.
-      • {region}  (table) The text to filter.
-                  • type: "v" charwise, "V" linewise, "\22" blockwise.
-                  • start: 1-based line and byte column.
-                  • finish: inclusive end; a column of |v:maxcol| means the
-                    end of the line.
-                  Named fields ({ lnum = 1, col = 11 }) and a positional
-                  pair ({ 1, 11 }) are both accepted.
+      • {region}  (table) The text to filter: the two ends of a Visual
+                  selection, in the shape |getpos()| reports one.
+                  • kind: "char", "line" or "block".
+                  • anchor: one end, { lnum, col, off } -- a 1-based line, a
+                    1-based byte column, and the screen cells of virtual
+                    space past that byte, as 'virtualedit' leaves them in
+                    getpos()'s fourth element. "off" is 0 or more, and
+                    defaults to 0.
+                  • cursor: the other end, in the same shape.
+                  • exclusive: leave the character "cursor" names out, the
+                    way 'selection' = "exclusive" does. Default false, and
+                    the region decides it, not the option.
+                  • ragged: true for a blockwise "$" selection, where every
+                    row ends at its own last byte. Optional.
+                  • width: blockwise only. The block is this many screen
+                    cells wide starting at "anchor", and "cursor" gives
+                    only its last line. This is how Vim repeats a block
+                    with "." -- the marks left behind cannot say how far
+                    right it reached. 1 to |v:maxcol|, and not with
+                    "exclusive".
+                  The two ends may be given in either order, except with
+                  "width", where "anchor" is the block's top-left corner.
       • {opts}    (table|nil) Options.
                   • bang: write the output even when the command fails.
                     Default false.
@@ -256,10 +271,6 @@ Known gaps ~
         • "<afile>", "<abuf>", "<amatch>", "<sfile>", "<slnum>", "<stack>",
           "<script>" and "<SID>" reach the shell as typed: they only mean
           something inside an autocommand or a sourced script.
-        • A 'virtualedit' block whose anchor is past the end of a line
-          that has a <Tab> before the anchor is filtered inexactly, because
-          the column is recovered as "col + off", which mixes byte and cell
-          counts; tab-free past-end-of-line blocks are exact.
         • ":lockmarks" and ":keepmarks" are not honoured: a run always moves
           "'[", "']" and the marks the new text displaces. Tracked in
           issue #21.
