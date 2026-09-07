@@ -38,6 +38,30 @@ local function get_line(buf, lnum)
   return api.nvim_buf_get_lines(buf, lnum - 1, lnum, false)[1] or ""
 end
 
+---`s` as a Vimscript function must be handed it. Inside a Vim string a buffer
+---NUL is carried as a NL (`:help NL-used-for-Nul`): that is what `getline()`
+---returns for one, `setbufline()` stores it back as a NUL, and
+---`strdisplaywidth()` renders it under 'display' as the screen does. The NUL
+---itself would make the Lua string a Blob, which those functions refuse, or
+---write as the literal text `0z610062` (#23).
+---@param s string
+---@return string
+local function as_vim_string(s)
+  if not s:find("\0", 1, true) then
+    return s
+  end
+  local carried = s:gsub("%z", "\n")
+  return carried
+end
+
+---Screen cells `text` occupies when it starts at cell `start` (0-based).
+---@param text string
+---@param start integer|nil
+---@return integer
+local function display_width(text, start)
+  return fn.strdisplaywidth(as_vim_string(text), start)
+end
+
 ---First and last screen cell occupied by the byte at `col`.
 ---A column past the end of the line counts one cell per byte beyond it, so a
 ---caller can name a column that a short line does not reach.
@@ -49,14 +73,14 @@ local function cell_span(line, col)
     return 1, 1
   end
   if col > #line then
-    local cell = fn.strdisplaywidth(line) + (col - #line)
+    local cell = display_width(line) + (col - #line)
     return cell, cell
   end
-  local before = fn.strdisplaywidth(line:sub(1, col - 1))
+  local before = display_width(line:sub(1, col - 1))
   local char = line:sub(col):match("^[%z\1-\127\194-\244][\128-\191]*") or line:sub(col, col)
   -- A <Tab> is as wide as the distance to the next tab stop, so its width is
   -- only defined relative to where it starts.
-  return before + 1, before + fn.strdisplaywidth(char, before)
+  return before + 1, before + display_width(char, before)
 end
 
 ---The bytes of `line` whose screen cells overlap the block columns
@@ -73,7 +97,7 @@ local function byte_range(line, left, right)
   local byte, first = 1, 1
   while byte <= #line do
     local char = line:sub(byte):match("^[%z\1-\127\194-\244][\128-\191]*") or line:sub(byte, byte)
-    local last = first + fn.strdisplaywidth(char, first - 1) - 1
+    local last = first + display_width(char, first - 1) - 1
     if last >= left and first <= right then
       if scol == 0 then
         scol = byte
@@ -247,7 +271,7 @@ local function resolve_block(buf, region)
   end
   local longest = 0
   for lnum = l1, l2 do
-    longest = math.max(longest, fn.strdisplaywidth(get_line(buf, lnum)))
+    longest = math.max(longest, display_width(get_line(buf, lnum)))
   end
   -- The last cell of the longest line is as far as a block can reach usefully;
   -- past it only padding follows, which the write-back trims off again. This is
@@ -312,7 +336,7 @@ local function segment_start(line, seg, block)
   if seg.scol == 0 then
     return block.left - 1
   end
-  return fn.strdisplaywidth(line:sub(1, seg.scol - 1))
+  return display_width(line:sub(1, seg.scol - 1))
 end
 
 ---The text the command receives, one string per line of the region.
@@ -329,7 +353,7 @@ function M.text(buf, resolved)
     local text = seg.scol == 0 and "" or line:sub(seg.scol, seg.ecol)
     if resolved.block then
       local start = segment_start(line, seg, resolved.block)
-      local pad = resolved.block.width - fn.strdisplaywidth(text, start)
+      local pad = resolved.block.width - display_width(text, start)
       if pad > 0 then
         text = text .. string.rep(" ", pad)
       end
@@ -392,11 +416,19 @@ local function write_charwise(buf, resolved, lines)
   return end_lnum, math.max(0, end_col - 1)
 end
 
+---The lines as a Vimscript function must be handed them; see `as_vim_string`.
+---@param lines string[]
+---@return string[]
+local function as_vim_lines(lines)
+  return vim.tbl_map(as_vim_string, lines)
+end
+
 ---Replace lines `first..last` (1-based, inclusive) with `lines`, keeping marks
 ---the way the built-in filter does ('cpo-R'): a mark stays on its line while
 ---that line exists, marks below shift with the line count, and only marks on
 ---lines the output no longer has are deleted. `nvim_buf_set_lines` would drop
----every mark in the range and pull `'<`/`'>` to its first line.
+---every mark in the range and pull `'<`/`'>` to its first line, and on 0.11
+---`nvim_buf_set_text` drops the mark on a line it rewrites whole.
 ---@param buf integer
 ---@param first integer
 ---@param last integer
@@ -404,9 +436,15 @@ end
 local function replace_lines(buf, first, last, lines)
   local old, new = last - first + 1, #lines
   local kept = math.min(old, new)
-  local failed = kept > 0 and fn.setbufline(buf, first, vim.list_slice(lines, 1, kept)) ~= 0
+  local vlines = as_vim_lines(lines)
+  -- These three raise on a nomodifiable buffer (E21) instead of reporting; what
+  -- they report with a non-zero return is a line number outside the buffer or
+  -- an invalid buffer handle, neither of which reaches here. The checks stay: a
+  -- write that silently does nothing while the run reports success is the
+  -- shape bug #23 had.
+  local failed = kept > 0 and fn.setbufline(buf, first, vim.list_slice(vlines, 1, kept)) ~= 0
   if not failed and new > old then
-    failed = fn.appendbufline(buf, last, vim.list_slice(lines, kept + 1)) ~= 0
+    failed = fn.appendbufline(buf, last, vim.list_slice(vlines, kept + 1)) ~= 0
   elseif not failed and new < old then
     failed = fn.deletebufline(buf, first + kept, last) ~= 0
   end
@@ -444,8 +482,8 @@ local function write_blockwise(buf, resolved, lines)
     local line = get_line(buf, seg.lnum)
     local original = seg.scol == 0 and "" or line:sub(seg.scol, seg.ecol)
     local start = segment_start(line, seg, block)
-    local had = fn.strdisplaywidth(original, start)
-    local growth = fn.strdisplaywidth(lines[i], start) - math.max(block.width, had)
+    local had = display_width(original, start)
+    local growth = display_width(lines[i], start) - math.max(block.width, had)
     rows[i] = { line = line, had = had, growth = growth }
     most = math.max(most, growth)
   end
@@ -469,7 +507,7 @@ local function write_blockwise(buf, resolved, lines)
       if seg.scol == 0 then
         -- The line stops before the block. Pad it out to the block column and
         -- put the output there, the way blockwise insert does (D5.4).
-        local pad = math.max(0, block.left - 1 - fn.strdisplaywidth(line))
+        local pad = math.max(0, block.left - 1 - display_width(line))
         head, tail = line .. string.rep(" ", pad), ""
       else
         head, tail = line:sub(1, seg.scol - 1), line:sub(seg.ecol + 1)
@@ -482,8 +520,10 @@ local function write_blockwise(buf, resolved, lines)
       end
     end
   end
-  -- One write for the whole block: a failure part way through the rows must not
-  -- leave the buffer half filtered (F9, D7.6).
+  -- One write for the whole block, and every row is built before it, so a
+  -- failure while building leaves the buffer untouched (F9, D7.6). Inside that
+  -- one call Neovim still reports each line to a buffer-attach callback, and a
+  -- change made from one of those is not guarded (#28).
   replace_lines(buf, segments[1].lnum, segments[#segments].lnum, rewritten)
   return segments[#segments].lnum - 1, math.max(0, end_col - 1)
 end
@@ -534,7 +574,12 @@ function M.write(buf, resolved, lines)
   if not ok then
     local message = tostring(result)
     if message:find("not 'modifiable'", 1, true) then
-      return "bang: buffer is not modifiable, nothing was replaced"
+      -- Only the API words it this way; `setbufline()` raises E21 and falls
+      -- through below. `run()` refused a nomodifiable buffer before the write,
+      -- so reaching this takes 'modifiable' going off during the one charwise
+      -- call, which no probe has managed. A guard, and one that claims nothing
+      -- about how much of the region was replaced (#28).
+      return "bang: buffer is not modifiable"
     end
     -- Anything else is a bug: keep the location it came with (F9).
     return ("bang: %s"):format(message)

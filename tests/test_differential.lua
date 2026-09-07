@@ -442,4 +442,36 @@ T["D-1 residual: a virtualedit block past a tab-led line diverges from gU"] = fu
   )
 end
 
+-- §12f Issue #23 NUL width -------------------------------------------------
+
+T["#23 a block edge after a NUL lands on the cells gU uses, under either 'display'"] = function()
+  -- A NUL has no fixed width: 'display' decides whether the screen shows it as
+  -- "^@" or as "<00>". The block's left edge is measured from the text before
+  -- it, so the sibling line without a NUL is where a wrong measure shows: the
+  -- block lands on a different column than gU picks. The second pass turns on
+  -- "uhex", which no single hardcoded width can satisfy alongside the first.
+  local lines = { "a\0bZZ", "abcdefgh" }
+  local entry = { lines = lines, keys = { "gg", "0", "3l", "<C-v>", "j" } }
+
+  for _, display in ipairs({ child.o.display, "uhex" }) do
+    child.o.display = display
+
+    select_region(entry)
+    child.type_keys("gU")
+    local expected = H.get_lines(child)
+    neq(expected, lines, {
+      fail_reason = display .. ": gU changed nothing, so the comparison would be vacuous",
+    })
+
+    select_region(entry)
+    -- One g! per pass, and the shared hook stubs a single answer (D4.2: an
+    -- unanswered prompt cancels and writes nothing).
+    H.stub_input(child, { "tr a-z A-Z" })
+    child.type_keys("g!")
+    eq(H.get_lines(child), expected, {
+      fail_reason = ("display=%s: g! landed on different cells than gU"):format(display),
+    })
+  end
+end
+
 return T
