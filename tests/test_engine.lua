@@ -1022,23 +1022,56 @@ end
 
 -- §12e Issue #8 rulings -----------------------------------------------------
 
+--- The buffer plus `'[`, `']` and the cursor, as `getpos()` reports them.
+local function written()
+  return child.lua_get([[{
+    lines = vim.api.nvim_buf_get_lines(0, 0, -1, true),
+    open = vim.fn.getpos("'["),
+    close = vim.fn.getpos("']"),
+    cursor = vim.fn.getpos("."),
+  }]])
+end
+
+--- Run the oracle the padding rulings name: Vim's own blockwise put of `rows`
+--- over columns 2 to 3 of `{ "1234", "5678" }`, the same block the cases filter.
+---
+--- Put pads a short row so that the text to the right of the block shifts by the
+--- same amount on every line, which is the whole of the ruling; the register is
+--- set blockwise so that `p` replaces the selection with one row per line.
+local function blockwise_put(rows)
+  child.cmd("enew!")
+  H.set_lines(child, { "1234", "5678" })
+  child.lua("vim.fn.setreg('z', ..., 'b')", { rows })
+  child.type_keys("gg", "0", "l", "<C-v>", "j", "l", '"zp')
+  return written()
+end
+
 T["#8 block output rows of unequal width are padded to the widest row"] = function()
-  -- Vim's blockwise put pads a short row so that the text to the right of the
-  -- block shifts by the same amount on every line: "aa"/"b" put at column 2
-  -- into "1234"/"5678" gives "12aa34"/"56b 78".
+  local expected = blockwise_put({ "aa", "b" })
+  eq(expected.lines, { "1aa4", "5b 8" }, {
+    fail_reason = "blockwise put no longer pads the short row",
+  })
+
+  child.cmd("enew!")
   H.set_lines(child, { "1234", "5678" })
   local res = H.run(child, "printf 'aa\\nb\\n'", H.blockwise(1, 2, 2, 3))
   eq(res.ok, true)
-  eq(H.get_lines(child), { "1aa4", "5b 8" })
+  eq(written(), expected, { fail_reason = "the short row was not padded as put pads it" })
 end
 
 T["#8 block rows that grow past the block are aligned too"] = function()
   -- The case the ruling is for: a command that widens some rows. Blockwise put
   -- pads "aaa"/"b" to "aaa"/"b  ", so the text after the block stays aligned.
+  local expected = blockwise_put({ "aaa", "b" })
+  eq(expected.lines, { "1aaa4", "5b  8" }, {
+    fail_reason = "blockwise put no longer aligns the rows",
+  })
+
+  child.cmd("enew!")
   H.set_lines(child, { "1234", "5678" })
   local res = H.run(child, "printf 'aaa\\nb\\n'", H.blockwise(1, 2, 2, 3))
   eq(res.ok, true)
-  eq(H.get_lines(child), { "1aaa4", "5b  8" })
+  eq(written(), expected, { fail_reason = "the grown rows were not aligned as put aligns them" })
 end
 
 T["#8 a <Tab> in the output is measured where it lands"] = function()
@@ -1070,15 +1103,67 @@ T["#8 a padded block row reaching the line's end gains no trailing space"] = fun
   local res = H.run(child, "printf 'xyz\\nq\\n'", H.blockwise(1, 3, 2, 4))
   eq(res.ok, true)
   eq(H.get_lines(child), { "12xyz", "56q" })
+  -- The row the block runs off the end of still received a byte, so `']` is on
+  -- it -- the "q" -- and not on the position after it (#25). A command whose
+  -- output is a different width than the block changes nothing about that.
+  eq(child.lua_get([[vim.fn.getpos("']")]]), { 0, 2, 3, 0 })
 end
 
 T["#8 zero output clears a block instead of being refused"] = function()
-  -- As blockwise `d` does: `d` on columns 2 to 3 of "1234"/"5678" gives
-  -- "14"/"58".
-  H.set_lines(child, { "1234", "5678" })
-  local res = H.run(child, "true", H.blockwise(1, 2, 2, 3))
-  eq(res.ok, true)
-  eq(H.get_lines(child), { "14", "58" })
+  -- The oracle is blockwise `d` on the same block, typed as keys: `d` on
+  -- columns 2 to 3 of "1234"/"5678" gives "14"/"58", and where it leaves `'[`,
+  -- `']` and the cursor is where a cleared block leaves them too. The other
+  -- shapes are a row the block never reaches and a row whose end it runs past,
+  -- which is where the marks used to be a column off (#25).
+  local cases = {
+    {
+      { "1234", "5678" },
+      { "gg", "0", "l", "<C-v>", "j", "l" },
+      H.blockwise(1, 2, 2, 3),
+      { "14", "58" },
+    },
+    -- The block stops past the last line's end.
+    {
+      { "abcdefgh", "ab" },
+      { "gg", "0", "4l", "<C-v>", "l", "j" },
+      H.blockwise(1, 5, 2, 3),
+      { "abfgh", "ab" },
+    },
+    -- ... and past the first line's.
+    {
+      { "ab", "abcdefgh" },
+      { "G", "0", "4l", "<C-v>", "l", "k" },
+      H.blockwise(2, 5, 1, 3),
+      { "ab", "abfgh" },
+    },
+    -- A `$` block runs past every line's end.
+    {
+      { "abcdef", "abcd" },
+      { "gg", "0", "l", "<C-v>", "j", "$" },
+      H.blockwise(1, 2, 2, H.MAXCOL),
+      { "a", "a" },
+    },
+  }
+  for i, case in ipairs(cases) do
+    local lines, keys, region, cleared = case[1], case[2], case[3], case[4]
+
+    child.cmd("enew!")
+    H.set_lines(child, lines)
+    child.type_keys(unpack(keys))
+    child.type_keys("d")
+    local expected = written()
+    eq(
+      expected.lines,
+      cleared,
+      { fail_reason = ("case %d: d no longer clears that block"):format(i) }
+    )
+
+    child.cmd("enew!")
+    H.set_lines(child, lines)
+    local res = H.run(child, "true", region)
+    eq(res.ok, true, { fail_reason = ("case %d: refused (%s)"):format(i, tostring(res.msg)) })
+    eq(written(), expected, { fail_reason = ("case %d: not what blockwise d does"):format(i) })
+  end
 end
 
 T["#8 a linewise run on a readonly buffer warns W10 exactly once"] = function()

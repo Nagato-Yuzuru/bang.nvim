@@ -277,15 +277,15 @@ local function resolve_block(buf, region)
   -- past it only padding follows, which the write-back trims off again. This is
   -- what keeps a `$` block from asking for a million spaces.
   local reach = math.max(longest, left)
-  right = ragged and reach or math.min(right, reach)
-  local block = { left = left, width = math.max(1, right - left + 1), ragged = ragged }
+  local edge = ragged and reach or math.min(right, reach)
+  local block = { left = left, width = math.max(1, edge - left + 1), ragged = ragged }
 
   -- Segments come straight from the block's own screen columns. Asking
   -- `getregionpos()` would re-derive the left edge from clamped positions and
   -- drop `off`, sliding the whole block left on a short first or last line (F2).
   local segments = {}
   for lnum = l1, l2 do
-    local scol, ecol = byte_range(get_line(buf, lnum), left, right)
+    local scol, ecol = byte_range(get_line(buf, lnum), left, edge)
     segments[#segments + 1] = { lnum = lnum, scol = scol, ecol = ecol }
   end
   return { kind = "block", segments = segments, block = block }
@@ -397,10 +397,18 @@ function M.output_lines(text, stdin_ended_with_newline)
   return vim.split(text, "\n", { plain = true })
 end
 
+---@class bang.Written Both ends of the text a writer put in the buffer, as
+---`'[` and `']` take them: a 1-based line and a 0-based byte column, which is
+---also what the cursor takes. The writer is the only place that knows what it
+---wrote and where, so it names both marks rather than leaving one to be
+---re-derived from the region.
+---@field from [integer, integer] Where the new text starts: `'[`, and the line the cursor lands on.
+---@field to [integer, integer] Where it ends: `']`.
+
 ---@param buf integer
 ---@param resolved bang.Resolved
 ---@param lines string[]
----@return integer lnum, integer col 0-based end of the text just written.
+---@return bang.Written
 local function write_charwise(buf, resolved, lines)
   local first = resolved.segments[1]
   local last = resolved.segments[#resolved.segments]
@@ -411,9 +419,11 @@ local function write_charwise(buf, resolved, lines)
   api.nvim_buf_set_text(buf, first.lnum - 1, scol, last.lnum - 1, last.ecol, lines)
   -- Only a single output line still starts at the region's own column; any
   -- further line begins at column 0.
-  local end_lnum = first.lnum - 1 + #lines - 1
   local end_col = #lines[#lines] + (#lines == 1 and scol or 0)
-  return end_lnum, math.max(0, end_col - 1)
+  return {
+    from = { first.lnum, scol },
+    to = { first.lnum + #lines - 1, math.max(0, end_col - 1) },
+  }
 end
 
 ---The lines as a Vimscript function must be handed them; see `as_vim_string`.
@@ -456,18 +466,24 @@ end
 ---@param buf integer
 ---@param resolved bang.Resolved
 ---@param lines string[]
----@return integer lnum, integer col
+---@return bang.Written
 local function write_linewise(buf, resolved, lines)
   local first = resolved.segments[1].lnum
   local last = resolved.segments[#resolved.segments].lnum
   replace_lines(buf, first, last, lines)
-  return math.max(0, first - 1 + math.max(#lines, 1) - 1), 0
+  -- Output shorter than the region leaves the buffer with fewer lines than the
+  -- region had, and a mark can only sit on a line that still exists.
+  local count = api.nvim_buf_line_count(buf)
+  return {
+    from = { math.min(first, count), 0 },
+    to = { math.min(first + math.max(#lines, 1) - 1, count), 0 },
+  }
 end
 
 ---@param buf integer
 ---@param resolved bang.Resolved
 ---@param lines string[] As many lines as the block has, checked by the caller.
----@return integer lnum, integer col
+---@return bang.Written
 local function write_blockwise(buf, resolved, lines)
   local segments, block = resolved.segments, resolved.block
   -- Rows of unequal width are padded so that the text to the right of the
@@ -487,7 +503,7 @@ local function write_blockwise(buf, resolved, lines)
     rows[i] = { line = line, had = had, growth = growth }
     most = math.max(most, growth)
   end
-  local rewritten, end_col = {}, 0
+  local rewritten, start_col, end_col = {}, 0, 0
   for i, seg in ipairs(segments) do
     local line = rows[i].line
     local align = most - rows[i].growth
@@ -500,24 +516,30 @@ local function write_blockwise(buf, resolved, lines)
       local trailing = #(text:match(" *$") or "")
       text = text:sub(1, #text - math.min(added, trailing))
     end
-    if seg.scol == 0 and text == "" then
-      rewritten[i] = line
-    else
-      local head, tail
-      if seg.scol == 0 then
-        -- The line stops before the block. Pad it out to the block column and
-        -- put the output there, the way blockwise insert does (D5.4).
-        local pad = math.max(0, block.left - 1 - display_width(line))
-        head, tail = line .. string.rep(" ", pad), ""
-      else
-        head, tail = line:sub(1, seg.scol - 1), line:sub(seg.ecol + 1)
-      end
-      rewritten[i] = head .. text .. tail
-      if i == #segments then
-        -- A cleared row leaves `']` on the character after the block, where
-        -- blockwise `d` puts it (#8).
-        end_col = #head + math.max(#text, 1)
-      end
+    local head, tail = line, ""
+    if seg.scol ~= 0 then
+      head, tail = line:sub(1, seg.scol - 1), line:sub(seg.ecol + 1)
+    elseif text ~= "" then
+      -- The line stops before the block. Pad it out to the block column and put
+      -- the output there, the way blockwise insert does (D5.4). With nothing to
+      -- put there the line keeps its own text, and the head is all of it.
+      head = line .. string.rep(" ", math.max(0, block.left - 1 - display_width(line)))
+    end
+    rewritten[i] = head .. text .. tail
+    if i == 1 then
+      -- `'[` goes where the new text starts, so on a line that stops before the
+      -- block it goes past the line's own last byte, as `gU` leaves it (D7.5).
+      start_col = #head
+    end
+    if i == #segments then
+      -- `'[` and `']` bracket the bytes the run wrote, as `:help ']` has it, so
+      -- `']` goes on the last byte of the new text. A row that received nothing
+      -- -- one the block never reached, or one the command cleared -- has no
+      -- such byte, and the mark goes where the block ends on that row instead:
+      -- the character after a cleared block, and past the row's own end where
+      -- the block reaches beyond it, both of which is where blockwise `d` puts
+      -- it (#8, #25).
+      end_col = #head + math.max(#text, 1) - 1
     end
   end
   -- One write for the whole block, and every row is built before it, so a
@@ -525,7 +547,10 @@ local function write_blockwise(buf, resolved, lines)
   -- one call Neovim still reports each line to a buffer-attach callback, and a
   -- change made from one of those is not guarded (#28).
   replace_lines(buf, segments[1].lnum, segments[#segments].lnum, rewritten)
-  return segments[#segments].lnum - 1, math.max(0, end_col - 1)
+  return {
+    from = { segments[1].lnum, start_col },
+    to = { segments[#segments].lnum, end_col },
+  }
 end
 
 ---Replace the region with `lines`, then set `'[`, `']` and the cursor (D7.5).
@@ -536,8 +561,7 @@ end
 ---@param lines string[]
 ---@return string|nil error
 function M.write(buf, resolved, lines)
-  local start = resolved.segments[1]
-  if not start then
+  if not resolved.segments[1] then
     return nil
   end
   if resolved.kind == "block" and #lines ~= #resolved.segments then
@@ -561,15 +585,12 @@ function M.write(buf, resolved, lines)
   -- fires FileChangedRO and warns W10 on the first change to a readonly
   -- buffer, exactly as the built-in filter does (#8).
   local ok, result = pcall(function()
-    local lnum, col
     if resolved.kind == "line" then
-      lnum, col = write_linewise(buf, resolved, lines)
+      return write_linewise(buf, resolved, lines)
     elseif resolved.kind == "block" then
-      lnum, col = write_blockwise(buf, resolved, lines)
-    else
-      lnum, col = write_charwise(buf, resolved, lines)
+      return write_blockwise(buf, resolved, lines)
     end
-    return { lnum = lnum, col = col }
+    return write_charwise(buf, resolved, lines)
   end)
   if not ok then
     local message = tostring(result)
@@ -585,21 +606,18 @@ function M.write(buf, resolved, lines)
     return ("bang: %s"):format(message)
   end
 
-  local start_col = resolved.kind == "line" and 0 or math.max(0, start.scol - 1)
-  local line_count = api.nvim_buf_line_count(buf)
-  local start_lnum = math.min(start.lnum, line_count)
-  local end_lnum = math.max(0, math.min(result.lnum, line_count - 1))
-  api.nvim_buf_set_mark(buf, "[", start_lnum, start_col, {})
-  api.nvim_buf_set_mark(buf, "]", end_lnum + 1, result.col, {})
+  api.nvim_buf_set_mark(buf, "[", result.from[1], result.from[2], {})
+  api.nvim_buf_set_mark(buf, "]", result.to[1], result.to[2], {})
   if api.nvim_get_current_buf() == buf then
-    local line = get_line(buf, start_lnum)
-    local col = start_col
+    local lnum, col = result.from[1], result.from[2]
+    local line = get_line(buf, lnum)
     if resolved.kind == "line" then
       -- Linewise, `!` leaves the cursor on the first non-blank of the new text;
       -- on an all-blank line it stops at the last character (D7.5).
       col = math.max(0, (line:find("[^ \t]") or #line) - 1)
     end
-    api.nvim_win_set_cursor(0, { start_lnum, math.min(col, math.max(#line - 1, 0)) })
+    -- A mark may sit past the last byte of its line, a cursor may not.
+    api.nvim_win_set_cursor(0, { lnum, math.min(col, math.max(#line - 1, 0)) })
   end
   return nil
 end

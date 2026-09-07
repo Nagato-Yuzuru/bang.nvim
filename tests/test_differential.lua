@@ -1,11 +1,22 @@
 -- Differential oracle: bang.nvim against Vim's own operator on the same selection.
 --
--- `gU` is the clean reference. It is a pure per-cell transform with no
--- line-count change, so `tr a-z A-Z` through bang.nvim must land on exactly the
--- same cells. (`tr` works on bytes, but a UTF-8 lead or continuation byte is
--- always >= 0x80, never in a-z, so the two agree on multibyte text with no case
--- as well.) Nothing here predicts a result: Vim computes it, and the same key
--- sequence is replayed for both arms.
+-- `gU` is the clean reference for a charwise or blockwise region. It is a pure
+-- per-cell transform with no line-count change, so `tr a-z A-Z` through
+-- bang.nvim must land on exactly the same cells. (`tr` works on bytes, but a
+-- UTF-8 lead or continuation byte is always >= 0x80, never in a-z, so the two
+-- agree on multibyte text with no case as well.) For a linewise region the
+-- oracle is the built-in filter, `:{range}!tr a-z A-Z`: #6 ruled the linewise
+-- marks against `!`, and the two operators disagree about `']` -- `gU` leaves it
+-- on the last byte of the region's last line, `!` in that line's column 1.
+-- Nothing here predicts a result: Vim computes it, and the same key sequence is
+-- replayed for both arms.
+--
+-- The text is not the whole result. `'[`, `']` and the cursor are compared
+-- against the same oracle (#25), because the write-back derived them from the
+-- region rather than from what it wrote: a block whose first or last row the
+-- block does not reach, and a `$` block, all landed them a column off. Every
+-- case below compares them except the `.` repeat: Neovim nightly rebuilds a
+-- block differently there (#12), so that one stays on the text alone.
 --
 -- Each corpus entry is checked through all three entry points -- Visual `g!`,
 -- typed `:'<,'>Bang`, and `run()` with the region rebuilt from the marks --
@@ -120,6 +131,26 @@ local CORPUS = {
     keys = { "gg", "0", "l", "<C-v>", "2j", "$" },
     api_maxcol = true,
   },
+  -- #25's three shapes: a row the block never reaches, and a row whose end it
+  -- runs past, are the rows `'[` and `']` used to be a column off on.
+  ["block whose first line stops before the block"] = {
+    -- Line 1 holds no text of the block at all, so `'[` has no byte of its own
+    -- to sit on and goes past the line's end, where the cursor then clamps.
+    lines = { "ab", "abcdefgh" },
+    keys = { "G", "0", "4l", "<C-v>", "l", "k" },
+  },
+  ["block whose last line stops before the block"] = {
+    -- The mirror image: `']` goes past the last line's end.
+    lines = { "abcdefgh", "ab" },
+    keys = { "gg", "0", "4l", "<C-v>", "l", "j" },
+  },
+  ["ragged block whose last line is the longest"] = {
+    -- A `$` block runs past every line's end, the longest one included, so `']`
+    -- lands one column past its last byte and not on it.
+    lines = { "abcd", "abcdefgh" },
+    keys = { "gg", "0", "l", "<C-v>", "j", "$" },
+    api_maxcol = true,
+  },
 }
 
 local LABELS = {
@@ -145,6 +176,9 @@ local LABELS = {
   "block over a column of tab-indented code",
   "block over full-width CJK lines",
   "ragged block",
+  "block whose first line stops before the block",
+  "block whose last line stops before the block",
+  "ragged block whose last line is the longest",
 }
 
 local params = {}
@@ -195,31 +229,99 @@ local function region_from_marks(api_maxcol)
   )
 end
 
+--- `'[`, `']` and the cursor, as `getpos()` reports them.
+local function positions()
+  return child.lua_get([[{
+    open = vim.fn.getpos("'["),
+    close = vim.fn.getpos("']"),
+    cursor = vim.fn.getpos("."),
+  }]])
+end
+
+--- Whether Vim's own account of the live selection covers any byte of its last
+--- line: `getregionpos()` gives column 0 for a line the region does not reach.
+local function covers_last_line()
+  return child.lua_get([[(function()
+    local raw = vim.fn.getregionpos(vim.fn.getpos("v"), vim.fn.getpos("."), { type = vim.fn.mode() })
+    local last = raw[#raw]
+    return last ~= nil and last[1][3] > 0
+  end)()]])
+end
+
+--- Run Vim's own operator over the selection and report what it left behind.
+---
+--- `gU` for a charwise or blockwise region; the built-in filter for a linewise
+--- one, whose marks #6 ruled against `!` rather than against `gU`.
+---
+--- One rule separates the plugin's positions from the oracle's, and it is the
+--- ruling of #25: `'[` and `']` bracket the bytes the run wrote. Vim's operators
+--- mark the region instead, and a region can end where no byte was written --
+--- past the last byte of a line a block reaches beyond, and on the line break a
+--- charwise `$` selects. There the plugin's `']` sits one column to the left, on
+--- the last byte it did write. Where the region covers no byte of that line at
+--- all -- a row the block never reaches -- the run wrote nothing there, so
+--- there is no byte to the left either and both marks sit past the line's end
+--- together.
+---
+--- The rule assumes the command keeps every row's width, as `tr a-z A-Z` does.
+--- A command that clears or shrinks a row moves the plugin's `']` by the
+--- cleared-row half of the ruling, which `covered`, taken from the region,
+--- cannot see: a corpus command of that kind needs the output as well.
+local function oracle(entry)
+  select_region(entry)
+  local linewise = child.lua_get("vim.fn.mode()") == "V"
+  local covered = covers_last_line()
+  if linewise then
+    child.type_keys("<Esc>")
+    child.cmd("silent! '<,'>!tr a-z A-Z")
+  else
+    child.type_keys("gU")
+  end
+  local expected = {
+    name = linewise and ":{range}!" or "gU",
+    lines = H.get_lines(child),
+    pos = positions(),
+  }
+  local close = expected.pos.close
+  if covered and close[3] > #(expected.lines[close[2]] or "") then
+    close[3] = close[3] - 1
+  end
+  return expected
+end
+
+--- Compare one entry point's result, text and positions, against the oracle.
+local function expect_oracle(entry_point, label, expected)
+  local where = ("%s: %s differs from %s"):format(label, entry_point, expected.name)
+  eq(H.get_lines(child), expected.lines, { fail_reason = where })
+  eq(positions(), expected.pos, { fail_reason = where .. " in '[, '] or the cursor" })
+end
+
 T["differential"] = MiniTest.new_set({ parametrize = params })
 
-T["differential"]["F2 every entry point matches Vim's own gU on the same selection"] = function(
+T["differential"]["F2 every entry point matches Vim's own operator on the same selection"] = function(
   label
 )
   local entry = CORPUS[label]
 
-  -- The oracle: Vim uppercases the selection itself.
-  select_region(entry)
-  child.type_keys("gU")
-  local expected = H.get_lines(child)
-  neq(expected, entry.lines, {
-    fail_reason = label .. ": gU changed nothing, so the comparison would be vacuous",
+  -- The oracle: Vim filters the selection itself.
+  local expected = oracle(entry)
+  neq(expected.lines, entry.lines, {
+    fail_reason = ("%s: %s changed nothing, so the comparison would be vacuous"):format(
+      label,
+      expected.name
+    ),
   })
 
   -- Visual `g!`.
   select_region(entry)
   child.type_keys("g!")
-  eq(H.get_lines(child), expected, { fail_reason = label .. ": Visual g! differs from gU" })
+  expect_oracle("Visual g!", label, expected)
 
   -- Typed `:'<,'>Bang`.
   select_region(entry)
   child.type_keys("<Esc>")
   H.type_cmd(child, "'<,'>Bang tr a-z A-Z")
-  eq(H.get_lines(child), expected, { fail_reason = label .. ": :'<,'>Bang differs from gU" })
+  expect_oracle(":'<,'>Bang", label, expected)
 
   -- `run()` with the region rebuilt from the marks.
   select_region(entry)
@@ -229,7 +331,7 @@ T["differential"]["F2 every entry point matches Vim's own gU on the same selecti
   H.set_lines(child, entry.lines)
   local res = H.run(child, "tr a-z A-Z", region)
   eq(res.ok, true, { fail_reason = label .. ": run() refused (" .. tostring(res.msg) .. ")" })
-  eq(H.get_lines(child), expected, { fail_reason = label .. ": run() differs from gU" })
+  expect_oracle("run()", label, expected)
 end
 
 -- §3.2 `.` on a block --------------------------------------------------------
@@ -242,6 +344,9 @@ T["D3.2 . after a blockwise g! matches Vim's own redo of gU"] = function()
   -- NOTE: no shape here has a far line shorter than the block. Neovim
   -- nightly's own redo narrows or moves the block there, while stable and 0.11
   -- keep the width :help visual-repeat promises; the operator test pins that.
+  -- For the same reason this case compares the text alone: where the redone
+  -- block itself differs by version (#12), `'[`, `']` and the cursor cannot be
+  -- held to one answer.
   local cases = {
     {
       { "abcd", "efgh", "", "abcd", "efgh" },
@@ -289,14 +394,18 @@ end
 T["F7 a virtualedit block with an anchor past the end of a line matches gU"] = function()
   -- `getpos()` carries `coladd` in its 4th element, so `col + off` recovers the
   -- virtual column and no new region field is needed for a tab-free line.
+  --
+  -- The text alone is compared here. Under 'virtualedit' the block stands past
+  -- line 1's end, and neither of Vim's positions there can be reproduced: `gU`
+  -- gives `'[` and `']` a `coladd` -- `getpos()`'s 4th element -- and
+  -- `nvim_buf_set_mark()` takes a byte column and nothing else; and `gU` leaves
+  -- the cursor out in that virtual space, where a cursor may only stand while
+  -- 'virtualedit' is on, so the plugin puts it on the line's last byte.
   child.o.virtualedit = "all"
   local lines = { "ab", "cdefgh", "ij" }
-  local keys = { "gg", "0", "4l", "<C-v>", "2j", "l" }
-  local entry = { lines = lines, keys = keys }
+  local entry = { lines = lines, keys = { "gg", "0", "4l", "<C-v>", "2j", "l" } }
 
-  select_region(entry)
-  child.type_keys("gU")
-  local expected = H.get_lines(child)
+  local expected = oracle(entry).lines
   neq(expected, lines, { fail_reason = "gU changed nothing, so the comparison would be vacuous" })
 
   select_region(entry)
@@ -319,13 +428,12 @@ T["F7 a virtualedit block with an anchor past the end of a line matches gU"] = f
 end
 
 T["F7 virtualedit = block behaves the same as virtualedit = all"] = function()
+  -- Text only, for the same reason as the case above.
   child.o.virtualedit = "block"
   local lines = { "ab", "cdefgh", "ij" }
   local entry = { lines = lines, keys = { "gg", "0", "4l", "<C-v>", "2j", "l" } }
 
-  select_region(entry)
-  child.type_keys("gU")
-  local expected = H.get_lines(child)
+  local expected = oracle(entry).lines
   neq(expected, lines)
 
   select_region(entry)
@@ -340,22 +448,21 @@ T["D-2 a block over a tab-bearing line whose far line is short is filtered, not 
   -- end, which used to slide the block's left edge onto line 1's tab and trip a
   -- spurious "half a tab" refusal. gU is the oracle and does not refuse.
   local lines = { "a\tbcd", "efghij" }
-  local keys = { "gg", "0", "fb", "<C-v>", "l", "j" }
-  local entry = { lines = lines, keys = keys }
+  local entry = { lines = lines, keys = { "gg", "0", "fb", "<C-v>", "l", "j" } }
 
-  select_region(entry)
-  child.type_keys("gU")
-  local expected = H.get_lines(child)
-  neq(expected, lines, { fail_reason = "gU changed nothing, so the comparison would be vacuous" })
+  local expected = oracle(entry)
+  neq(expected.lines, lines, {
+    fail_reason = "gU changed nothing, so the comparison would be vacuous",
+  })
 
   select_region(entry)
   child.type_keys("g!")
-  eq(H.get_lines(child), expected, { fail_reason = "Visual g! refused or wrote the wrong cells" })
+  expect_oracle("Visual g!", "D-2", expected)
 
   select_region(entry)
   child.type_keys("<Esc>")
   H.type_cmd(child, "'<,'>Bang tr a-z A-Z")
-  eq(H.get_lines(child), expected, { fail_reason = ":'<,'>Bang refused or wrote the wrong cells" })
+  expect_oracle(":'<,'>Bang", "D-2", expected)
 end
 
 T["D-2 no tab/CJK boundary is refused where gU accepts it"] = function()
@@ -371,9 +478,7 @@ T["D-2 no tab/CJK boundary is refused where gU accepts it"] = function()
   }
   for i, c in ipairs(cases) do
     local entry = { lines = c[1], keys = c[2] }
-    select_region(entry)
-    child.type_keys("gU")
-    local expected = H.get_lines(child)
+    local expected = oracle(entry)
 
     select_region(entry)
     -- Each iteration presses g! once, so restub the single answer per case; the
@@ -382,9 +487,7 @@ T["D-2 no tab/CJK boundary is refused where gU accepts it"] = function()
     H.stub_input(child, { "tr a-z A-Z" })
     H.reset_notifications(child)
     child.type_keys("g!")
-    eq(H.get_lines(child), expected, {
-      fail_reason = ("case %d: g! did not match gU (%s)"):format(i, vim.inspect(expected)),
-    })
+    expect_oracle("g!", ("case %d"):format(i), expected)
     eq(#H.notifications(child), 0, { fail_reason = ("case %d: g! notified a refusal"):format(i) })
   end
 end

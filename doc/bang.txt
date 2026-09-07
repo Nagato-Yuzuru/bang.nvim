@@ -104,6 +104,26 @@ offers them, and 'shada' persists them. |@:| repeats the last command line
 you typed: it replays a typed :Bang, not a run made with g!, which |.|
 repeats. Failed runs and cancelled prompts record nothing.
 
+MARKS AND THE CURSOR                                              *bang-marks*
+
+"'[" and "']" bracket the bytes the run wrote, as |']| describes them, and
+the cursor lands on "'[", or on the last character of that line when "'["
+sits past it, as a mark may and a cursor may not. A row that received
+nothing -- one a block never reached, or one the command cleared -- has no
+such byte, so "']" goes where the block ends on that row instead: on the
+character after a cleared block, and past the row's own end where the block
+reaches beyond it, which is where |v_d| leaves it too. A linewise run
+leaves all three where the built-in |:range!| leaves them, except after
+empty output, where the built-in leaves "']" unset and bang puts both marks
+on the first line that remains; empty output from a charwise run is not
+settled either (#31).
+
+Vim's own operators mark the region rather than the bytes, so |gU| puts
+"']" one column further right in the two places where the region reaches
+past what the run wrote: past the last byte of a row a block reaches
+beyond, and onto the line break a charwise "$" selects, which stays in the
+buffer (see |v_g!|).
+
 ==============================================================================
 4. CONFIGURATION                                                 *bang-config*
 
