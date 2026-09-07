@@ -22,3 +22,7 @@ run = "prek run --all-files --show-diff-on-failure"
 [tasks.check]
 depends = ["lint", "docs", "test"]
 description = "Everything CI runs: lint, docs, test"
+
+[tasks.demo]
+description = "Re-render every demo GIF in demo/ from its tape (needs vhs, ttyd, ffmpeg)"
+run = "for t in demo/[a-z]*.tape; do vhs \"$t\"; done"
