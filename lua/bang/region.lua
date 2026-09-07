@@ -491,6 +491,19 @@ end
 ---@field from [integer, integer] Where the new text starts: `'[`, and the line the cursor lands on.
 ---@field to [integer, integer] Where it ends: `']`.
 
+---Where a written span ends: the last of `count` bytes -- or lines -- counted
+---from `start`, which is what `']` takes. A span that received nothing -- zero
+---output, an output line carrying no bytes of its own, a block row the command
+---cleared or one the block never reached -- has no last byte, so the end stays
+---where those bytes would have begun and `']` sits with `'[`. That is where
+---`d`, the operator that writes nothing either, leaves them both (#25, #31).
+---@param start integer
+---@param count integer Bytes or lines written, 0 when none were.
+---@return integer
+local function span_end(start, count)
+  return start + math.max(count, 1) - 1
+end
+
 ---@param buf integer
 ---@param resolved bang.Resolved
 ---@param lines string[]
@@ -505,10 +518,10 @@ local function write_charwise(buf, resolved, lines)
   api.nvim_buf_set_text(buf, first.lnum - 1, scol, last.lnum - 1, last.ecol, lines)
   -- Only a single output line still starts at the region's own column; any
   -- further line begins at column 0.
-  local end_col = #lines[#lines] + (#lines == 1 and scol or 0)
+  local start_col = #lines == 1 and scol or 0
   return {
     from = { first.lnum, scol },
-    to = { first.lnum + #lines - 1, math.max(0, end_col - 1) },
+    to = { first.lnum + #lines - 1, span_end(start_col, #lines[#lines]) },
   }
 end
 
@@ -558,11 +571,16 @@ local function write_linewise(buf, resolved, lines)
   local last = resolved.segments[#resolved.segments].lnum
   replace_lines(buf, first, last, lines)
   -- Output shorter than the region leaves the buffer with fewer lines than the
-  -- region had, and a mark can only sit on a line that still exists.
+  -- region had, and a mark can only sit on a line that still exists. Empty
+  -- output writes no line for `']` to end on, so both marks go on the line that
+  -- took the region's place -- or on the last line that remains, where the
+  -- region ran to the end of the buffer and no line took it. Vim's own marks do
+  -- sit past the last line after a run like that; it is `nvim_buf_set_mark()`
+  -- that refuses to put one there (#31).
   local count = api.nvim_buf_line_count(buf)
   return {
     from = { math.min(first, count), 0 },
-    to = { math.min(first + math.max(#lines, 1) - 1, count), 0 },
+    to = { math.min(span_end(first, #lines), count), 0 },
   }
 end
 
@@ -619,13 +637,12 @@ local function write_blockwise(buf, resolved, lines)
     end
     if i == #segments then
       -- `'[` and `']` bracket the bytes the run wrote, as `:help ']` has it, so
-      -- `']` goes on the last byte of the new text. A row that received nothing
-      -- -- one the block never reached, or one the command cleared -- has no
-      -- such byte, and the mark goes where the block ends on that row instead:
-      -- the character after a cleared block, and past the row's own end where
-      -- the block reaches beyond it, both of which is where blockwise `d` puts
-      -- it (#8, #25).
-      end_col = #head + math.max(#text, 1) - 1
+      -- `']` goes on the last byte of the new text. Where the row received no
+      -- byte, `span_end` leaves the mark where the block ends on that row: the
+      -- character after a cleared block, and past the row's own end where the
+      -- block reaches beyond it, both of which is where blockwise `d` puts it
+      -- (#8, #25).
+      end_col = span_end(#head, #text)
     end
   end
   -- One write for the whole block, and every row is built before it, so a

@@ -112,11 +112,16 @@ sits past it, as a mark may and a cursor may not. A row that received
 nothing -- one a block never reached, or one the command cleared -- has no
 such byte, so "']" goes where the block ends on that row instead: on the
 character after a cleared block, and past the row's own end where the block
-reaches beyond it, which is where |v_d| leaves it too. A linewise run
-leaves all three where the built-in |:range!| leaves them, except after
-empty output, where the built-in leaves "']" unset and bang puts both marks
-on the first line that remains; empty output from a charwise run is not
-settled either (#31).
+reaches beyond it, which is where |v_d| leaves it too. A run that wrote
+no byte at all has none for either mark, so both sit where those bytes
+would have begun: the region's own start after a charwise run, where
+|v_d| leaves them too, and the line that took the region's place after a
+linewise one -- or, where the region ran to the end of the buffer and no
+line took its place, the last line that remains, which is where the
+cursor goes as well. A linewise run otherwise leaves all three where the
+built-in |:range!| leaves them. After empty output it differs twice: the
+built-in puts "']" on the line before "'[", and, where the region reached
+the last line, it puts "'[" itself on a line the buffer no longer has.
 
 Vim's own operators mark the region rather than the bytes, so |gU| puts
 "']" one column further right in the two places where the region reaches
