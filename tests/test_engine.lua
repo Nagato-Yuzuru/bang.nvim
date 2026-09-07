@@ -1410,6 +1410,19 @@ end
 
 -- §12g Issue #31 rulings ----------------------------------------------------
 
+-- The built-in filter's marks after empty output are pinned on stable and 0.11
+-- only: Neovim nightly already puts both on the first line of the new text, as
+-- bang does (measured on v0.13.0-dev-1545), so there the pin is a note.
+local function pin_builtin(actual, expected, reason)
+  if child.fn.has("nvim-0.13") == 1 then
+    MiniTest.add_note(
+      "nightly's filter marks empty output the way bang does; the built-in pin is skipped"
+    )
+  else
+    eq(actual, expected, { fail_reason = reason })
+  end
+end
+
 T["#31 zero output leaves the charwise marks where charwise d leaves them"] = function()
   -- A run that wrote nothing has no byte for `']` to sit on, so the mark goes
   -- where those bytes would have begun -- the region's own start, which is
@@ -1466,9 +1479,11 @@ T["#31 zero output puts both linewise marks on the line taking the region's plac
     open = { 0, 1, 1, 0 },
     cursor = { 0, 1, 1, 0 },
   }, { fail_reason = "the built-in filter no longer deletes the lines this way" })
-  eq(builtin.close, { 0, 0, 0, 0 }, {
-    fail_reason = "the built-in filter no longer puts '] on the line before '[",
-  })
+  pin_builtin(
+    builtin.close,
+    { 0, 0, 0, 0 },
+    "the built-in filter no longer puts '] on the line before '["
+  )
 
   child.cmd("enew!")
   H.set_lines(child, { "aa", "bb", "cc" })
@@ -1491,12 +1506,12 @@ T["#31 a zero-output linewise run below the first line still marks one line"] = 
   child.cmd("enew!")
   H.set_lines(child, { "aa", "bb", "cc", "dd" })
   child.cmd("silent! 2,3!true")
-  eq(written(), {
+  pin_builtin(written(), {
     lines = { "aa", "dd" },
     open = { 0, 2, 1, 0 },
     close = { 0, 1, 1, 0 },
     cursor = { 0, 2, 1, 0 },
-  }, { fail_reason = "the built-in filter no longer puts '] on the line before '[" })
+  }, "the built-in filter no longer puts '] on the line before '[")
 
   child.cmd("enew!")
   H.set_lines(child, { "aa", "bb", "cc", "dd" })
@@ -1520,12 +1535,12 @@ T["#31 zero output at the end of the buffer marks the last line that remains"] =
   child.cmd("enew!")
   H.set_lines(child, { "aa", "bb", "cc" })
   child.cmd("silent! 2,3!true")
-  eq(written(), {
+  pin_builtin(written(), {
     lines = { "aa" },
     open = { 0, 2, 1, 0 },
     close = { 0, 1, 1, 0 },
     cursor = { 0, 1, 1, 0 },
-  }, { fail_reason = "the built-in filter no longer puts '[ past the last line" })
+  }, "the built-in filter no longer puts '[ past the last line")
   eq(child.lua_get([[(pcall(vim.api.nvim_buf_set_mark, 0, "[", 2, 0, {}))]]), false, {
     fail_reason = "a mark can sit past the last line now, so '[ could follow the built-in",
   })
