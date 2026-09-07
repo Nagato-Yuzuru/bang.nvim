@@ -1340,16 +1340,37 @@ T["#8 a readonly buffer checked out by FileChangedRO is not warned about"] = fun
   eq(#H.notifications(child), 0)
 end
 
-T["F9 (D7.6) a blockwise write is all-or-nothing"] = function()
-  MiniTest.skip(
-    "Does not hold: the rows go in one setbufline() call, but Neovim reports "
-      .. "each line to an nvim_buf_attach on_bytes callback as it goes -- turning "
-      .. "off 'modifiable' from the callback for the second line leaves the block "
-      .. "half filled and the run reported as failed. Tracked in issue #28; there "
-      .. "is no all-or-nothing to assert until it is fixed. The nearest standing "
-      .. "guard is 'D7.5 one undo restores the buffer after a blockwise run', "
-      .. "which pins the single undo step."
-  )
+T["F9 (D7.6) a blockwise write stops where a buffer-attach callback stops it"] = function()
+  -- D7.6 is a documented limit, not a guarantee (#28, `:help bang-differences`).
+  -- The rows go in one setbufline() call, but Neovim reports each row to an
+  -- nvim_buf_attach on_bytes callback as it goes, and a callback that turns
+  -- 'modifiable' off between two rows leaves the rows before it written. Only
+  -- an attach callback reaches in there: no autocommand fires between the rows.
+  --
+  -- Undoing the rows already written was measured and refused: the write is one
+  -- undo block, but so is everything else the same command changed, so the undo
+  -- takes back an earlier run's write in the same mapping too -- and under
+  -- 'undolevels' = -1 it silently does nothing, which would leave the run
+  -- claiming a rollback it never made.
+  H.set_lines(child, { "1234", "5678", "9abc", "defg" })
+  child.lua([[
+    _G.bang_rows = 0
+    vim.api.nvim_buf_attach(0, false, {
+      on_bytes = function()
+        _G.bang_rows = _G.bang_rows + 1
+        if _G.bang_rows == 2 then
+          pcall(function() vim.bo.modifiable = false end)
+        end
+      end,
+    })
+  ]])
+  local res = H.run(child, "tr 0-9a-g A-Z", H.blockwise(1, 2, 4, 3))
+  eq(res.ok, false)
+  eq(H.get_lines(child), { "1CD4", "5GH8", "9abc", "defg" })
+  -- The report names what the buffer raised, and claims nothing about how much
+  -- of the region was replaced (#23).
+  eq(res.msg:find("E21", 1, true) ~= nil, true)
+  eq(res.msg:find("nothing was replaced", 1, true) == nil, true)
 end
 
 -- §12f Issue #23 rulings ----------------------------------------------------

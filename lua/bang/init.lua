@@ -90,7 +90,8 @@ end
 ---Filter `region` through `cmd` and replace it with the output.
 ---
 ---Runs the whole pipeline, notifications included, and leaves the buffer
----byte-identical whenever anything goes wrong.
+---byte-identical whenever anything goes wrong -- except where the buffer stops
+---the write itself part-way, the one limit `:help bang-differences` names (#28).
 ---@param cmd string Shell command line, run through 'shell'.
 ---@param region bang.Region
 ---@param opts bang.RunOpts|nil
