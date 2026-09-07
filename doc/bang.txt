@@ -253,6 +253,12 @@ Failure ~
         A non-zero exit still overwrites the region with stdout and stderr.
         bang.nvim leaves the buffer alone and shows the message;
         on_error = "replace", or ":Bang!", restores the built-in behaviour.
+        Anything refused before the write leaves the buffer byte-identical,
+        but a write the buffer stops part-way leaves the lines already
+        written in place, with the message naming the error rather than
+        claiming that nothing was replaced. Only a callback registered with
+        |nvim_buf_attach()| can arrange that, by turning 'modifiable' off
+        between two lines of the write; no autocommand fires in there.
 
 Output order ~
         The built-in interleaves stdout and stderr as produced. In replace

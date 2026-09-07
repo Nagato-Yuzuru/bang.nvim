@@ -630,8 +630,12 @@ local function write_blockwise(buf, resolved, lines)
   end
   -- One write for the whole block, and every row is built before it, so a
   -- failure while building leaves the buffer untouched (F9, D7.6). Inside that
-  -- one call Neovim still reports each line to a buffer-attach callback, and a
-  -- change made from one of those is not guarded (#28).
+  -- one call Neovim still reports each row to a buffer-attach callback, and one
+  -- that turns 'modifiable' off between two rows leaves the rows before it
+  -- written: a documented limit, `:help bang-differences` (#28). Undoing them
+  -- would take back more than this run -- the write is one undo block, and so
+  -- is whatever else the same command changed, an earlier run included -- and
+  -- under 'undolevels' = -1 it would take back nothing at all.
   replace_lines(buf, segments[1].lnum, segments[#segments].lnum, rewritten)
   return {
     from = { segments[1].lnum, start_col },
