@@ -1429,4 +1429,153 @@ T["#23 a NUL-carrying linewise write keeps marks the way the built-in ! does"] =
   eq({ lines = H.get_lines(child), marks = marks() }, builtin)
 end
 
+-- §12g Issue #31 rulings ----------------------------------------------------
+
+-- The built-in filter's marks after empty output are pinned on stable and 0.11
+-- only: Neovim nightly already puts both on the first line of the new text, as
+-- bang does (measured on v0.13.0-dev-1545), so there the pin is a note.
+local function pin_builtin(actual, expected, reason)
+  if child.fn.has("nvim-0.13") == 1 then
+    MiniTest.add_note(
+      "nightly's filter marks empty output the way bang does; the built-in pin is skipped"
+    )
+  else
+    eq(actual, expected, { fail_reason = reason })
+  end
+end
+
+T["#31 zero output leaves the charwise marks where charwise d leaves them"] = function()
+  -- A run that wrote nothing has no byte for `']` to sit on, so the mark goes
+  -- where those bytes would have begun -- the region's own start, which is
+  -- `'[`. `d` over the same columns is the operator that wrote nothing too and
+  -- lands both marks there; `']` used to sit one column to the left of `'[`.
+  child.cmd("enew!")
+  H.set_lines(child, { "abcdef" })
+  child.type_keys("gg", "0", "2l", "v", "2l", "d")
+  local expected = written()
+  eq(expected.lines, { "abf" }, { fail_reason = "d no longer deletes columns 3 to 5" })
+
+  child.cmd("enew!")
+  H.set_lines(child, { "abcdef" })
+  local res = H.run(child, "true", H.charwise(1, 3, 1, 5))
+  eq(res.ok, true)
+  local got = written()
+  eq(got, expected, { fail_reason = "not what charwise d does" })
+  eq(got, {
+    lines = { "abf" },
+    open = { 0, 1, 3, 0 },
+    close = { 0, 1, 3, 0 },
+    cursor = { 0, 1, 3, 0 },
+  })
+end
+
+T["#31 an output of one empty line marks the same as no output at all"] = function()
+  -- `echo` writes a newline and no byte, which the split leaves as one empty
+  -- line rather than as no line -- a different path to the same write. Neither
+  -- mark has a byte, so both stay where the region began, as they do for `true`.
+  child.cmd("enew!")
+  H.set_lines(child, { "abcdef" })
+  local res = H.run(child, "echo", H.charwise(1, 3, 1, 5))
+  eq(res.ok, true)
+  eq(written(), {
+    lines = { "abf" },
+    open = { 0, 1, 3, 0 },
+    close = { 0, 1, 3, 0 },
+    cursor = { 0, 1, 3, 0 },
+  })
+end
+
+T["#31 zero output puts both linewise marks on the line taking the region's place"] = function()
+  -- The built-in filter, which #6 ruled the linewise marks by, puts `'[` and
+  -- the cursor on the line the new text would have begun on, and `']` on the
+  -- line before it -- line 0 here, which is how "unset" is spelled, the region
+  -- having started at line 1. bang has no byte to bracket, so it puts `']` on
+  -- `'[`.
+  child.cmd("enew!")
+  H.set_lines(child, { "aa", "bb", "cc" })
+  child.cmd("silent! 1,2!true")
+  local builtin = written()
+  eq({ lines = builtin.lines, open = builtin.open, cursor = builtin.cursor }, {
+    lines = { "cc" },
+    open = { 0, 1, 1, 0 },
+    cursor = { 0, 1, 1, 0 },
+  }, { fail_reason = "the built-in filter no longer deletes the lines this way" })
+  pin_builtin(
+    builtin.close,
+    { 0, 0, 0, 0 },
+    "the built-in filter no longer puts '] on the line before '["
+  )
+
+  child.cmd("enew!")
+  H.set_lines(child, { "aa", "bb", "cc" })
+  local res = H.run(child, "true", H.linewise(1, 2))
+  eq(res.ok, true)
+  eq(written(), {
+    lines = { "cc" },
+    open = { 0, 1, 1, 0 },
+    close = { 0, 1, 1, 0 },
+    cursor = { 0, 1, 1, 0 },
+  })
+end
+
+T["#31 a zero-output linewise run below the first line still marks one line"] = function()
+  -- The same run one line down, where the built-in's `']` is a line that exists
+  -- -- line 1, still the one before `'[` -- and the divergence from bang, which
+  -- puts `']` on `'[`, is a mark on a different line rather than a mark that is
+  -- not set. The differential corpus cannot hold this shape: its oracle keeps
+  -- the built-in's `']` unless that is line 0.
+  child.cmd("enew!")
+  H.set_lines(child, { "aa", "bb", "cc", "dd" })
+  child.cmd("silent! 2,3!true")
+  pin_builtin(written(), {
+    lines = { "aa", "dd" },
+    open = { 0, 2, 1, 0 },
+    close = { 0, 1, 1, 0 },
+    cursor = { 0, 2, 1, 0 },
+  }, "the built-in filter no longer puts '] on the line before '[")
+
+  child.cmd("enew!")
+  H.set_lines(child, { "aa", "bb", "cc", "dd" })
+  local res = H.run(child, "true", H.linewise(2, 3))
+  eq(res.ok, true)
+  eq(written(), {
+    lines = { "aa", "dd" },
+    open = { 0, 2, 1, 0 },
+    close = { 0, 2, 1, 0 },
+    cursor = { 0, 2, 1, 0 },
+  })
+end
+
+T["#31 zero output at the end of the buffer marks the last line that remains"] = function()
+  -- The same run where the region reached the last line: no line takes its
+  -- place, so the built-in's `'[` names line 2 of a buffer that now has one --
+  -- Vim's own marks do sit past the last line, but `nvim_buf_set_mark()`
+  -- refuses to put one there, on 0.11 and 0.12 alike. The rule is followed as
+  -- far as a mark can go, so both marks land on the last line that remains,
+  -- where the built-in leaves the cursor too.
+  child.cmd("enew!")
+  H.set_lines(child, { "aa", "bb", "cc" })
+  child.cmd("silent! 2,3!true")
+  pin_builtin(written(), {
+    lines = { "aa" },
+    open = { 0, 2, 1, 0 },
+    close = { 0, 1, 1, 0 },
+    cursor = { 0, 1, 1, 0 },
+  }, "the built-in filter no longer puts '[ past the last line")
+  eq(child.lua_get([[(pcall(vim.api.nvim_buf_set_mark, 0, "[", 2, 0, {}))]]), false, {
+    fail_reason = "a mark can sit past the last line now, so '[ could follow the built-in",
+  })
+
+  child.cmd("enew!")
+  H.set_lines(child, { "aa", "bb", "cc" })
+  local res = H.run(child, "true", H.linewise(2, 3))
+  eq(res.ok, true)
+  eq(written(), {
+    lines = { "aa" },
+    open = { 0, 1, 1, 0 },
+    close = { 0, 1, 1, 0 },
+    cursor = { 0, 1, 1, 0 },
+  })
+end
+
 return T
