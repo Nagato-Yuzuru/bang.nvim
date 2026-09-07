@@ -1,10 +1,10 @@
 -- Regions: the buffer half of the pipeline.
 --
--- A region as the caller states it (line numbers and byte columns) is turned
--- into one segment per line, in the `getregionpos()` vocabulary. Everything
--- downstream -- the text handed to the command, the tab check, the write-back
--- and the marks -- is derived from those segments, so input and output can
--- never disagree about where the region is.
+-- A region as the caller states it (two `getpos()` positions) is turned into one
+-- segment per line by `getregionpos()`, which owns the geometry of all three
+-- kinds. Everything downstream -- the text handed to the command, the tab check,
+-- the write-back and the marks -- is derived from those segments, so input and
+-- output can never disagree about where the region is.
 
 local api = vim.api
 local fn = vim.fn
@@ -16,8 +16,10 @@ M.BLOCK = "\22"
 
 ---@class bang.Segment
 ---@field lnum integer 1-based line number.
----@field scol integer 1-based first byte of the segment, 0 when the line holds no text of the region.
+---@field scol integer 1-based first byte of the segment, 0 when a block never reaches the line.
 ---@field ecol integer 1-based last byte of the segment (inclusive), 0 when there is none.
+---A charwise segment always names real byte columns: a line the region holds no
+---text of is the empty span after its last byte, `scol = #line + 1`, `ecol = #line`.
 
 ---@class bang.Block
 ---@field left integer Left edge of the block, in screen cells.
@@ -29,7 +31,7 @@ M.BLOCK = "\22"
 ---@field segments bang.Segment[] One entry per line, top to bottom.
 ---@field block bang.Block|nil Present exactly when `kind` is "block".
 
-local KINDS = { v = "char", V = "line", [M.BLOCK] = "block" }
+local KINDS = { char = true, line = true, block = true }
 
 ---@param buf integer
 ---@param lnum integer
@@ -62,116 +64,269 @@ local function display_width(text, start)
   return fn.strdisplaywidth(as_vim_string(text), start)
 end
 
----First and last screen cell occupied by the byte at `col`.
----A column past the end of the line counts one cell per byte beyond it, so a
----caller can name a column that a short line does not reach.
----@param line string
----@param col integer 1-based byte column.
----@return integer first, integer last
-local function cell_span(line, col)
-  if col < 1 then
-    return 1, 1
-  end
-  if col > #line then
-    local cell = display_width(line) + (col - #line)
-    return cell, cell
-  end
-  local before = display_width(line:sub(1, col - 1))
-  local char = line:sub(col):match("^[%z\1-\127\194-\244][\128-\191]*") or line:sub(col, col)
-  -- A <Tab> is as wide as the distance to the next tab stop, so its width is
-  -- only defined relative to where it starts.
-  return before + 1, before + display_width(char, before)
-end
-
----The bytes of `line` whose screen cells overlap the block columns
----`[left, right]`. A <Tab> or a wide character on a boundary is included whole,
----exactly as Vim's own blockwise operators do -- `scol`/`ecol` snap to
----whole-character bounds -- so a boundary inside a <Tab> is no longer a refusal
----(D-2, superseding D5.5).
----@param line string
----@param left integer
----@param right integer
----@return integer scol, integer ecol
-local function byte_range(line, left, right)
-  local scol, ecol = 0, 0
-  local byte, first = 1, 1
-  while byte <= #line do
-    local char = line:sub(byte):match("^[%z\1-\127\194-\244][\128-\191]*") or line:sub(byte, byte)
-    local last = first + display_width(char, first - 1) - 1
-    if last >= left and first <= right then
-      if scol == 0 then
-        scol = byte
-      end
-      ecol = byte + #char - 1
-    end
-    first = last + 1
-    byte = byte + #char
-  end
-  return scol, ecol
-end
-
----A byte column `getregionpos()` accepts on that line: past the last byte it
----raises E964, and a column of 0 only exists on an empty line.
+---The bytes of the character that starts at `col`.
 ---@param line string
 ---@param col integer
 ---@return integer
-local function clamp_col(line, col)
-  return math.max(1, math.min(col, math.max(#line, 1)))
+local function char_bytes(line, col)
+  local char = line:sub(col):match("^[%z\1-\127\194-\244][\128-\191]*")
+  return char and #char or 1
+end
+
+---Whether `n` is a number a position may be built from. NaN and infinity pass
+---`type()` and reach `getregionpos()` as "not integral", which raises where the
+---contract promises a report; a fraction of a byte column means nothing either.
+---@param n any
+---@return boolean
+local function is_index(n)
+  return type(n) == "number" and n == math.floor(n) and n > -math.huge and n < math.huge
 end
 
 ---@param pos any
 ---@param what string
----@return { lnum: integer, col: integer }|nil, string|nil
+---@return { lnum: integer, col: integer, off: integer }|nil, string|nil
 local function normalize_pos(pos, what)
   if type(pos) ~= "table" then
     return nil, ("bang: region.%s must be a table, got %s"):format(what, type(pos))
   end
-  local lnum, col = pos.lnum or pos[1], pos.col or pos[2]
-  if type(lnum) ~= "number" or type(col) ~= "number" then
-    return nil, ("bang: region.%s needs a line number and a byte column"):format(what)
+  local off = pos.off == nil and 0 or pos.off
+  if not is_index(pos.lnum) or not is_index(pos.col) then
+    return nil, ("bang: region.%s needs a whole line number and byte column"):format(what)
   end
-  return { lnum = math.floor(lnum), col = math.floor(col) }
+  -- Virtual space only ever runs to the right of the byte: a negative offset
+  -- would pull the region's edge left of the column it was given and, for a
+  -- block, pad the rows out with spaces on the way back.
+  if not is_index(off) or off < 0 then
+    return nil, ("bang: region.%s.off must be a whole number of cells, 0 or more"):format(what)
+  end
+  return { lnum = pos.lnum, col = pos.col, off = off }
 end
 
----Check a caller-supplied region and put its two ends in buffer order.
+---Check a caller-supplied region and put its two ends in buffer order. Which of
+---them is the anchor and which the cursor matters only to `getregionpos()`, and
+---it reads the pair either way round.
 ---@param region table
----@return { kind: string, start: { lnum: integer, col: integer }, finish: { lnum: integer, col: integer } }|nil, string|nil
+---@return { kind: string, anchor: table, cursor: table, ragged: boolean }|nil, string|nil
 function M.normalize(region)
   if type(region) ~= "table" then
     return nil, ("bang: region must be a table, got %s"):format(type(region))
   end
-  local kind = KINDS[region.type]
-  if not kind then
+  if not KINDS[region.kind] then
     return nil,
-      ('bang: region.type must be "v", "V" or CTRL-V, got %s'):format(vim.inspect(region.type))
+      ('bang: region.kind must be "char", "line" or "block", got %s'):format(
+        vim.inspect(region.kind)
+      )
   end
-  local start, err = normalize_pos(region.start, "start")
-  if not start then
-    return nil, err
+  if region.ragged ~= nil and type(region.ragged) ~= "boolean" then
+    return nil, ("bang: region.ragged must be a boolean, got %s"):format(type(region.ragged))
   end
-  local finish, ferr = normalize_pos(region.finish, "finish")
-  if not finish then
-    return nil, ferr
+  if region.exclusive ~= nil and type(region.exclusive) ~= "boolean" then
+    return nil, ("bang: region.exclusive must be a boolean, got %s"):format(type(region.exclusive))
   end
-  if start.lnum > finish.lnum or (start.lnum == finish.lnum and start.col > finish.col) then
-    start, finish = finish, start
+  if region.width ~= nil then
+    if region.kind ~= "block" then
+      return nil, ("bang: region.width is blockwise only, got kind %q"):format(region.kind)
+    end
+    -- Bounded because it reaches `getregionpos()` as part of the region type:
+    -- a number too big to be a column is not a block anyone drew, and `v:maxcol`
+    -- is where Vim itself stops counting them.
+    if not is_index(region.width) or region.width < 1 or region.width > vim.v.maxcol then
+      return nil,
+        ("bang: region.width must be a whole number of cells, 1 to %d, got %s"):format(
+          vim.v.maxcol,
+          vim.inspect(region.width)
+        )
+    end
+    -- A width says where the block's right edge is; "exclusive" says the cursor
+    -- end decides it. Only one of them can be right.
+    if region.exclusive then
+      return nil, "bang: region.width and region.exclusive contradict each other"
+    end
   end
-  if start.lnum < 1 then
+  local anchor, aerr = normalize_pos(region.anchor, "anchor")
+  if not anchor then
+    return nil, aerr
+  end
+  local cursor, cerr = normalize_pos(region.cursor, "cursor")
+  if not cursor then
+    return nil, cerr
+  end
+  -- Two corners describe the same region either way round, and
+  -- `getregionpos()` reads them either way round, so they go in buffer order
+  -- and nothing downstream has to ask again. A `width` region is not a pair of
+  -- corners: its anchor is where the block starts and has to stay there.
+  local swap = anchor.lnum > cursor.lnum or (anchor.lnum == cursor.lnum and anchor.col > cursor.col)
+  if swap and not region.width then
+    anchor, cursor = cursor, anchor
+  end
+  if math.min(anchor.lnum, cursor.lnum) < 1 then
     return nil, "bang: region is outside the buffer"
   end
-  -- A block may carry its two live corners, which name the screen columns
-  -- exactly; `'<`/`'>` cannot, once they are reordered by position (D-2).
-  return { kind = kind, start = start, finish = finish, block = region.block }
+  return {
+    kind = region.kind,
+    anchor = anchor,
+    cursor = cursor,
+    ragged = region.ragged == true,
+    exclusive = region.exclusive == true,
+    width = region.width,
+  }
 end
 
+---A position as `getregionpos()` takes it. It raises E964 on a column the line
+---does not have, so everything past the last byte plus one becomes virtual
+---space instead -- the cells a block may stand in past the end of a line (R5).
+---And a position names a character, not a byte inside one: a byte column inside
+---a multibyte character would cut the region there and hand the command half a
+---character, which is not text -- and a prefix that ends mid-character is not a
+---width to measure a corner by either.
+---@param buf integer
+---@param pos { lnum: integer, col: integer, off: integer }
+---@return integer[] position, string line
+local function corner(buf, pos)
+  local line = get_line(buf, pos.lnum)
+  local col = math.min(pos.col, #line + 1)
+  local off = pos.off + math.max(0, pos.col - col)
+  col = math.max(1, col)
+  if col <= #line then
+    col = col + vim.str_utf_start(line, col)
+  end
+  return { buf, pos.lnum, col, off }, line
+end
+
+---The screen cell a corner stands on: the first cell of the character at its
+---column, plus its cells of virtual space.
+---@param line string
+---@param pos integer[]
+---@return integer
+local function corner_cell(line, pos)
+  return display_width(line:sub(1, pos[3] - 1)) + 1 + pos[4]
+end
+
+---The last screen cell of the character a corner sits on. A block takes that
+---character whole -- a <Tab> or a wide one included -- which is how Vim's own
+---blockwise operators treat a corner (D-2). A corner in virtual space sits on
+---no character, and neither does one past the line's last byte: both cover the
+---single cell they stand on.
+---@param line string
+---@param pos integer[]
+---@return integer
+local function corner_char_end(line, pos)
+  local cell = corner_cell(line, pos)
+  if pos[4] ~= 0 or pos[3] > #line then
+    return cell
+  end
+  local char = line:sub(pos[3], pos[3] + char_bytes(line, pos[3]) - 1)
+  return math.max(cell, cell - 1 + display_width(char, cell - 1))
+end
+
+---`getregionpos()` on a pair of positions, reported rather than raised.
+---
+---Virtual space -- a non-zero `off` -- only exists for Vim while 'virtualedit'
+---allows a position there, and it is dropped otherwise, sliding the region onto
+---the last real column. The option is turned on for the call so that a region
+---stands where the caller put it whatever the user's own setting (R5, F7). Only
+---the window's own value is touched: 'virtualedit' is global-local, and `vim.o`
+---would write the global one too, promoting a `:setlocal` value to every window
+---opened afterwards.
 ---@param pos1 integer[]
 ---@param pos2 integer[]
----@param rtype string Region type, with an explicit width for a block.
----@return bang.Segment[]|nil, string|nil
-local function segments_between(pos1, pos2, rtype)
-  local ok, raw = pcall(fn.getregionpos, pos1, pos2, { type = rtype, exclusive = false })
+---@param rtype string
+---@param exclusive boolean Whether the cursor end's character is left out.
+---@return table[]|nil, string|nil
+local function region_pairs(pos1, pos2, rtype, exclusive)
+  local scope = { scope = "local", win = 0 }
+  local saved = (pos1[4] ~= 0 or pos2[4] ~= 0) and api.nvim_get_option_value("virtualedit", scope)
+    or nil
+  if saved then
+    api.nvim_set_option_value("virtualedit", "all", scope)
+  end
+  local ok, raw = pcall(fn.getregionpos, pos1, pos2, { type = rtype, exclusive = exclusive })
+  if saved then
+    api.nvim_set_option_value("virtualedit", saved, scope)
+  end
   if not ok then
     return nil, ("bang: cannot resolve the region (%s)"):format(raw)
+  end
+  return raw
+end
+
+---@param buf integer
+---@param region table Result of `M.normalize`.
+---@return bang.Resolved|nil, string|nil
+local function resolve_block(buf, region)
+  local pos1, line1 = corner(buf, region.anchor)
+  local pos2, rtype, left
+  if region.width then
+    -- Vim's own model of a repeated block: `width` cells from the anchor's own
+    -- cell, with the cursor naming the last line and nothing else. A
+    -- width-typed block starts at the leftmost of the two positions, so the
+    -- second one is put at the anchor's cell on its own line -- in the virtual
+    -- space past the end of a line too short to hold it -- where it can only
+    -- ever tie, never drag the edge left.
+    left = corner_cell(line1, pos1)
+    local line2 = get_line(buf, region.cursor.lnum)
+    pos2 = { buf, region.cursor.lnum, #line2 + 1, math.max(0, left - display_width(line2) - 1) }
+    rtype = M.BLOCK .. ("%d"):format(region.width)
+  else
+    -- `getregionpos()` owns the geometry: 'selection', the cells a short line
+    -- never reaches, and a <Tab> or a wide character a corner sits on, which
+    -- widens the block to cover it whole (D-2). The left edge is the one thing
+    -- it does not report -- a row the block does not reach has no bytes to
+    -- report it with -- so that comes from the corners.
+    local line2
+    pos2, line2 = corner(buf, region.cursor)
+    left = math.min(corner_cell(line1, pos1), corner_cell(line2, pos2))
+    rtype = M.BLOCK
+  end
+  local raw, err = region_pairs(pos1, pos2, rtype, region.exclusive)
+  if not raw then
+    return nil, err
+  end
+  local segments, edge = {}, left
+  for _, pair in ipairs(raw) do
+    local from, to = pair[1], pair[2]
+    local scol, ecol = from[3], 0
+    if scol > 0 then
+      local line = get_line(buf, from[2])
+      ecol = to[3]
+      local reach = display_width(line:sub(1, ecol))
+      if to[4] ~= 0 then
+        -- A non-zero offset means the right edge falls part-way into a <Tab> or
+        -- a wide character, and counts the cells of it the block covers. The row
+        -- takes that character whole, as Vim's own blockwise operators do, while
+        -- the block's own edge stays where it was (D-2, superseding D5.5).
+        reach = display_width(line:sub(1, ecol - 1)) + to[4]
+        ecol = ecol + char_bytes(line, ecol) - 1
+      end
+      -- `$` is the one fact two positions cannot carry: the right edge is then
+      -- every row's own end.
+      if region.ragged then
+        ecol, reach = #line, display_width(line)
+      end
+      -- The last cell any row of the block reaches, which is as far as it can
+      -- reach usefully: past that only padding follows, which the write-back
+      -- trims off again. It is what keeps a `$` block from asking for a million
+      -- spaces.
+      edge = math.max(edge, reach)
+    end
+    segments[#segments + 1] = { lnum = from[2], scol = scol, ecol = ecol }
+  end
+  return {
+    kind = "block",
+    segments = segments,
+    block = { left = left, width = math.max(1, edge - left + 1), ragged = region.ragged },
+  }
+end
+
+---@param buf integer
+---@param region table Result of `M.normalize`.
+---@return bang.Resolved|nil, string|nil
+local function resolve_char(buf, region)
+  local pos1 = corner(buf, region.anchor)
+  local pos2 = corner(buf, region.cursor)
+  local raw, err = region_pairs(pos1, pos2, "v", region.exclusive)
+  if not raw then
+    return nil, err
   end
   local segments = {}
   for _, pair in ipairs(raw) do
@@ -182,113 +337,51 @@ local function segments_between(pos1, pos2, rtype)
       return nil,
         ("bang: region boundary falls inside a <Tab> on line %d, cannot filter it"):format(from[2])
     end
-    segments[#segments + 1] = { lnum = from[2], scol = from[3], ecol = to[3] }
-  end
-  return segments
-end
-
----@class bang.BlockHint How an adapter names a block's screen columns, which
----`'<`/`'>` cannot once they are reordered by position (D-2): both corners
----while the selection is live, or one corner plus the width a `.` replays.
----@field anchor { lnum: integer, col: integer } A corner: 1-based line, byte column plus coladd.
----@field cursor { lnum: integer, col: integer }|nil The other corner.
----@field width integer|nil Width in screen cells, in place of `cursor`.
----@field ragged boolean Whether `$` is active.
-
----@class bang.BlockShape
----@field width integer Width in screen cells.
----@field ragged boolean Whether `$` is active.
-
----Left and right screen cells of the block a hint describes.
----@param buf integer
----@param hint bang.BlockHint
----@return integer left, integer right
-local function hint_columns(buf, hint)
-  local a = hint.anchor
-  local aleft, aright = cell_span(get_line(buf, a.lnum), a.col)
-  if hint.width then
-    -- A `.` replays a width that was measured through this function, so it is
-    -- already whatever 'selection' made of the original block.
-    return aleft, aleft + hint.width - 1
-  end
-  local c = hint.cursor
-  local cleft, cright = cell_span(get_line(buf, c.lnum), c.col)
-  -- Vim builds the block from the corner earlier in the buffer and the one
-  -- later: the later corner widens the block to its own right edge, except
-  -- that 'selection' = "exclusive" leaves that corner's character out when the
-  -- block stays at least as wide as the earlier corner's character without it.
-  -- So `l<C-v>ld` on "1234" gives "134", `<C-v>jh` still takes both columns,
-  -- and a <Tab> or a wide character on the right edge stays in whole (#8).
-  local later = c.lnum > a.lnum or (c.lnum == a.lnum and c.col > a.col)
-  local eleft, eright, lleft, lright = aleft, aright, cleft, cright
-  if not later then
-    eleft, eright, lleft, lright = cleft, cright, aleft, aright
-  end
-  local right = eright
-  if lright > eright then
-    if vim.o.selection == "exclusive" and lleft - 1 >= eright then
-      right = lleft - 1
-    else
-      right = lright
+    local scol, ecol = from[3], to[3]
+    if scol == 0 then
+      -- Column 0 is `getregionpos()` for "this line holds no text of the
+      -- region": an empty line, or a first line the region starts past the end
+      -- of. Written as the empty span after that line's last byte, because the
+      -- write-back needs a byte column to start from and would read 0 as
+      -- column 1 and swallow the line (#22).
+      local line = get_line(buf, from[2])
+      scol, ecol = #line + 1, #line
     end
+    segments[#segments + 1] = { lnum = from[2], scol = scol, ecol = ecol }
   end
-  return math.min(eleft, lleft), right
+  return { kind = "char", segments = segments }
 end
 
----The shape of the block a hint describes, for a `.` repeat to replay. Vim
----rebuilds the block at the cursor, but the opfunc can read back neither its
----width (`']` clamps to a short last line) nor `$` (curswant is a column again).
+---The width of a blockwise region in screen cells: the distance between its two
+---corners, and nil for the other two kinds. This is the block's own width, not
+---the narrower one the rows under it happen to draw -- Vim replays a block at
+---its full width whatever the text at the cursor looks like, while `'[`/`']`
+---reach no further than the last line's own end, so a `.` has to be told (D3.2).
 ---@param buf integer
----@param hint bang.BlockHint
----@return bang.BlockShape
-function M.block_shape(buf, hint)
-  local left, right = hint_columns(buf, hint)
-  return { width = right - left + 1, ragged = hint.ragged }
-end
-
----@param buf integer
----@param region table Result of `M.normalize`.
----@return bang.Resolved|nil, string|nil
-local function resolve_block(buf, region)
-  local l1, l2 = region.start.lnum, region.finish.lnum
-  local left, right, ragged
-  if region.block then
-    -- Each screen column stays with its own corner. A far corner on a short
-    -- line, or a `$` corner, no longer drags the edge (D-2).
-    left, right = hint_columns(buf, region.block)
-    ragged = region.block.ragged
-  else
-    -- Raw `run()` with byte columns: the marks are all there is. Both edges come
-    -- from the columns as given, never from clamped ones (R5, F7).
-    local sleft, sright = cell_span(get_line(buf, l1), region.start.col)
-    local fleft, fright = cell_span(get_line(buf, l2), region.finish.col)
-    ragged = region.start.col == vim.v.maxcol or region.finish.col == vim.v.maxcol
-    -- A maxcol corner means "to end of line", not a real column, so it must not
-    -- pull the left edge out to infinity.
-    left = ragged and (region.start.col == vim.v.maxcol and fleft or sleft)
-      or math.min(sleft, fleft)
-    right = math.max(sright, fright)
+---@param region bang.Region
+---@return integer|nil
+function M.block_width(buf, region)
+  local normalized = M.normalize(region)
+  if not normalized or normalized.kind ~= "block" then
+    return nil
   end
-  local longest = 0
-  for lnum = l1, l2 do
-    longest = math.max(longest, display_width(get_line(buf, lnum)))
+  local pos1, line1 = corner(buf, normalized.anchor)
+  local pos2, line2 = corner(buf, normalized.cursor)
+  local afirst, alast = corner_cell(line1, pos1), corner_char_end(line1, pos1)
+  local cfirst, clast = corner_cell(line2, pos2), corner_char_end(line2, pos2)
+  -- Vim builds the block from the leftmost of the two corners' first cells and
+  -- the rightmost of their last, so a <Tab> or a wide character under either
+  -- corner widens it (D-2).
+  local right = math.max(alast, clast)
+  -- The ends are in buffer order, so `cursor` is the later corner: the one an
+  -- exclusive region leaves out, and only while the block stays at least as
+  -- wide as the earlier corner's own character without it (#8). Everywhere else
+  -- `getregionpos()` applies that itself; here there may be no row of text for
+  -- it to apply it to.
+  if normalized.exclusive and cfirst > afirst and cfirst - 1 >= alast then
+    right = cfirst - 1
   end
-  -- The last cell of the longest line is as far as a block can reach usefully;
-  -- past it only padding follows, which the write-back trims off again. This is
-  -- what keeps a `$` block from asking for a million spaces.
-  local reach = math.max(longest, left)
-  local edge = ragged and reach or math.min(right, reach)
-  local block = { left = left, width = math.max(1, edge - left + 1), ragged = ragged }
-
-  -- Segments come straight from the block's own screen columns. Asking
-  -- `getregionpos()` would re-derive the left edge from clamped positions and
-  -- drop `off`, sliding the whole block left on a short first or last line (F2).
-  local segments = {}
-  for lnum = l1, l2 do
-    local scol, ecol = byte_range(get_line(buf, lnum), left, edge)
-    segments[#segments + 1] = { lnum = lnum, scol = scol, ecol = ecol }
-  end
-  return { kind = "block", segments = segments, block = block }
+  return right - math.min(afirst, cfirst) + 1
 end
 
 ---Turn a normalized region into one segment per line.
@@ -296,15 +389,14 @@ end
 ---@param region table Result of `M.normalize`.
 ---@return bang.Resolved|nil, string|nil
 function M.resolve(buf, region)
-  local last_line = api.nvim_buf_line_count(buf)
-  if region.start.lnum > last_line or region.finish.lnum > last_line then
+  if math.max(region.anchor.lnum, region.cursor.lnum) > api.nvim_buf_line_count(buf) then
     return nil, "bang: region is outside the buffer"
   end
-  local l1, l2 = region.start.lnum, region.finish.lnum
 
   if region.kind == "line" then
     local segments = {}
-    for lnum = l1, l2 do
+    -- Linewise never carries a width, so `normalize` put the ends in order.
+    for lnum = region.anchor.lnum, region.cursor.lnum do
       segments[#segments + 1] = { lnum = lnum, scol = 1, ecol = #get_line(buf, lnum) }
     end
     return { kind = "line", segments = segments }
@@ -314,13 +406,7 @@ function M.resolve(buf, region)
     return resolve_block(buf, region)
   end
 
-  local pos1 = { buf, l1, clamp_col(get_line(buf, l1), region.start.col), 0 }
-  local pos2 = { buf, l2, clamp_col(get_line(buf, l2), region.finish.col), 0 }
-  local segments, err = segments_between(pos1, pos2, "v")
-  if not segments then
-    return nil, err
-  end
-  return { kind = "char", segments = segments }
+  return resolve_char(buf, region)
 end
 
 ---The screen cell (0-based) where a segment's text starts, which is where a
@@ -412,7 +498,7 @@ end
 local function write_charwise(buf, resolved, lines)
   local first = resolved.segments[1]
   local last = resolved.segments[#resolved.segments]
-  local scol = first.scol == 0 and 0 or first.scol - 1
+  local scol = first.scol - 1
   if #lines == 0 then
     lines = { "" }
   end
@@ -616,8 +702,14 @@ function M.write(buf, resolved, lines)
       -- on an all-blank line it stops at the last character (D7.5).
       col = math.max(0, (line:find("[^ \t]") or #line) - 1)
     end
-    -- A mark may sit past the last byte of its line, a cursor may not.
-    api.nvim_win_set_cursor(0, { lnum, math.min(col, math.max(#line - 1, 0)) })
+    -- A mark may sit past the last byte of its line, a cursor may not -- and
+    -- clamping it back into the line can land it inside a character, which is
+    -- no place for a cursor either (#22).
+    col = math.min(col, math.max(#line - 1, 0))
+    if col > 0 then
+      col = col + vim.str_utf_start(line, col + 1)
+    end
+    api.nvim_win_set_cursor(0, { lnum, col })
   end
   return nil
 end

@@ -202,6 +202,20 @@ T["D3.2 . repeats a blockwise Visual g! on the block under the cursor"] = functi
   eq(H.get_lines(child), { "acbdef", "acbdef", "", "acbdef", "acbdef" })
 end
 
+T["D3.2 . repeats an exclusive block at the width the run used"] = function()
+  -- The width `.` replays is the block's own, and under 'selection' =
+  -- "exclusive" the block is one cell narrower than its two corners span. There
+  -- may be no row of text for `getregionpos()` to say so on, so the width is
+  -- measured with the exclusion applied.
+  child.o.selection = "exclusive"
+  H.stub_input(child, { "tr a-z A-Z" })
+  H.set_lines(child, { "abcdefgh", "abcdefgh", "", "abcdefgh", "abcdefgh" })
+  child.type_keys("gg", "0", "<C-v>", "j", "2l", "g!")
+  eq(H.get_lines(child), { "ABcdefgh", "ABcdefgh", "", "abcdefgh", "abcdefgh" })
+  child.type_keys("4G", "0", ".")
+  eq(H.get_lines(child), { "ABcdefgh", "ABcdefgh", "", "ABcdefgh", "ABcdefgh" })
+end
+
 T["D3.2 . repeats a CTRL-V $ block to each line's end"] = function()
   -- On a redo the opfunc cannot read `$` back: curswant is a column again and
   -- `']` is clamped to the last line, so the shape has to be remembered.
@@ -686,6 +700,29 @@ T["#8 g! on an exclusive block leaves out the cursor column"] = function()
   })
   eq(bang_does(lines, keys, "true"), expected)
   eq(bang_does(lines, keys, "tr 0-9 a-j").lines, { "1c34", "5g78" })
+end
+
+T["F2 an exclusive operator motion covers exactly the bytes Vim marked"] = function()
+  -- `'[`/`']` bracket the bytes the operator covered, so they are inclusive ends
+  -- whatever 'selection' is; the region says so itself and the engine no longer
+  -- reads the option. Reading them as a Visual selection and stepping the end
+  -- forward again reached a byte the motion never covered.
+  child.o.selection = "exclusive"
+
+  -- The reported shape: an empty backwards motion, where `cat` must change
+  -- nothing at all.
+  H.stub_input(child, { "cat" })
+  local lines = { "ba  ", "\t" }
+  H.set_lines(child, lines)
+  child.type_keys("2G", "0", "g!", "0")
+  eq(H.get_lines(child), lines, { fail_reason = "cat must be an identity on what `0` covered" })
+
+  -- And the extent itself: the command brackets what it received, so one
+  -- character too many is visible.
+  H.stub_input(child, { "sed 's/.*/[&]/'" })
+  H.set_lines(child, { "abc def" })
+  child.type_keys("gg", "0", "g!", "iw")
+  eq(H.get_lines(child), { "[abc] def" }, { fail_reason = "the motion covered `abc`, not `abc `" })
 end
 
 T["#8 an exclusive block keeps a wide character on its right edge whole"] = function()
