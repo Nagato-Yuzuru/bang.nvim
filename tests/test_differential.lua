@@ -11,6 +11,10 @@
 -- Nothing here predicts a result: Vim computes it, and the same key sequence is
 -- replayed for both arms.
 --
+-- An entry running a command that writes nothing pairs with `d` instead of
+-- `gU`, and with `:{range}!true` when it is linewise: the operator that also
+-- wrote nothing is what the marks after zero output are ruled against (#31).
+--
 -- The text is not the whole result. `'[`, `']` and the cursor are compared
 -- against the same oracle (#25), because the write-back derived them from the
 -- region rather than from what it wrote: a block whose first or last row the
@@ -28,10 +32,15 @@ local eq, neq = MiniTest.expect.equality, MiniTest.expect.no_equality
 
 local child = MiniTest.new_child_neovim()
 
+-- What an entry runs and what its oracle replays, unless the entry names its
+-- own: the pair that rewrites every cell and changes no line count.
+local CMD, OP = "tr a-z A-Z", "gU"
+
 -- The corpus. `keys` ends in Visual mode with the selection made.
 --
 -- `ragged` marks a selection the mark pair cannot describe on its own: after
 -- `CTRL-V $` the `'>` column is the cursor's, so the Lua API needs the flag.
+-- `cmd` and `op` override `CMD` and `OP` for the entries that write nothing.
 local CORPUS = {
   ["char single line"] = {
     lines = { "password: hunter2" },
@@ -157,6 +166,38 @@ local CORPUS = {
     keys = { "gg", "0", "l", "<C-v>", "j", "$" },
     ragged = true,
   },
+  -- #31's shapes: a run that writes nothing, where neither mark has a byte to
+  -- bracket. The linewise entry is also the corpus's only line-count-changing
+  -- one.
+  ["char zero output"] = {
+    lines = { "abcdef" },
+    keys = { "gg", "0", "2l", "v", "2l" },
+    cmd = "true",
+    op = "d",
+  },
+  ["char zero output to end of line"] = {
+    -- Both marks end up past the shortened line's last byte, which is the one
+    -- place the #25 trim would reach for them: `covered` is true and the column
+    -- is past the line's end, exactly as it is for a `gU` that over-reaches.
+    -- Only the oracle being `d` tells the two apart.
+    lines = { "abcdef" },
+    keys = { "gg", "0", "3l", "v", "2l" },
+    cmd = "true",
+    op = "d",
+  },
+  ["linewise zero output"] = {
+    lines = { "aa", "bb", "cc" },
+    keys = { "gg", "V", "j" },
+    cmd = "true",
+  },
+  ["block zero output"] = {
+    -- The engine test pins the cleared-block shapes through `run()`; what this
+    -- adds is Visual `g!` and `:'<,'>Bang` over a block that ends up cleared.
+    lines = { "abcd", "efgh" },
+    keys = { "gg", "0", "l", "<C-v>", "j", "l" },
+    cmd = "true",
+    op = "d",
+  },
 }
 
 local LABELS = {
@@ -186,6 +227,10 @@ local LABELS = {
   "block whose first line stops before the block",
   "block whose last line stops before the block",
   "ragged block whose last line is the longest",
+  "char zero output",
+  "char zero output to end of line",
+  "linewise zero output",
+  "block zero output",
 }
 
 -- Every entry runs under both 'selection' values. `gU` obeys 'selection' too,
@@ -264,7 +309,8 @@ end
 --- Run Vim's own operator over the selection and report what it left behind.
 ---
 --- `gU` for a charwise or blockwise region; the built-in filter for a linewise
---- one, whose marks #6 ruled against `!` rather than against `gU`.
+--- one, whose marks #6 ruled against `!` rather than against `gU`. An entry
+--- whose command writes nothing names `d` instead of `gU`.
 ---
 --- One rule separates the plugin's positions from the oracle's, and it is the
 --- ruling of #25: `'[` and `']` bracket the bytes the run wrote. Vim's operators
@@ -276,28 +322,43 @@ end
 --- there is no byte to the left either and both marks sit past the line's end
 --- together.
 ---
---- The rule assumes the command keeps every row's width, as `tr a-z A-Z` does.
---- A command that clears or shrinks a row moves the plugin's `']` by the
---- cleared-row half of the ruling, which `covered`, taken from the region,
---- cannot see: a corpus command of that kind needs the output as well.
+--- The one-column trim is `gU`'s alone. `gU` rewrites exactly the region, byte
+--- for byte, so the column it over-reaches by is always that one -- while
+--- `covered`, taken from the region, cannot see what the plugin's own command
+--- did with a row's width. `d` writes nothing anywhere, so both its marks
+--- already sit where the bytes would have begun, which is the plugin's rule for
+--- a run that wrote nothing (#31): there is nothing to take off them.
 local function oracle(entry)
   select_region(entry)
+  local cmd, op = entry.cmd or CMD, entry.op or OP
   local linewise = child.lua_get("vim.fn.mode()") == "V"
   local covered = covers_last_line()
   if linewise then
     child.type_keys("<Esc>")
-    child.cmd("silent! '<,'>!tr a-z A-Z")
+    child.cmd("silent! '<,'>!" .. cmd)
   else
-    child.type_keys("gU")
+    child.type_keys(op)
   end
   local expected = {
-    name = linewise and ":{range}!" or "gU",
+    name = linewise and (":{range}!" .. cmd) or op,
     lines = H.get_lines(child),
     pos = positions(),
   }
   local close = expected.pos.close
-  if covered and close[3] > #(expected.lines[close[2]] or "") then
+  -- Of the three oracles only `gU` marks the region rather than the bytes, so
+  -- the trim is its alone -- and `op` is `gU`'s default for a linewise entry
+  -- too, whose oracle was the filter.
+  local marks_region = not linewise and op == "gU"
+  if marks_region and covered and close[3] > #(expected.lines[close[2]] or "") then
     close[3] = close[3] - 1
+  end
+  if linewise and close[2] == 0 then
+    -- Empty output: the built-in filter puts `']` on the line before `'[`,
+    -- which is line 0 -- how "unset" is spelled -- for a region starting at
+    -- line 1, the shape every linewise entry here has. The plugin has no byte
+    -- to bracket, so it puts both marks where the region began: `'[` is what
+    -- `']` is held to (#31).
+    expected.pos.close = vim.deepcopy(expected.pos.open)
   end
   return expected
 end
@@ -316,6 +377,7 @@ T["differential"]["F2 every entry point matches Vim's own operator on the same s
   selection
 )
   local entry = CORPUS[label]
+  local cmd = entry.cmd or CMD
   child.o.selection = selection
   label = ("%s (selection=%s)"):format(label, selection)
 
@@ -328,15 +390,18 @@ T["differential"]["F2 every entry point matches Vim's own operator on the same s
     ),
   })
 
-  -- Visual `g!`.
+  -- Visual `g!`. The single prompt is answered with this entry's command; the
+  -- shared hook stubs the default one (D4.2: an unanswered prompt cancels and
+  -- writes nothing).
   select_region(entry)
+  H.stub_input(child, { cmd })
   child.type_keys("g!")
   expect_oracle("Visual g!", label, expected)
 
   -- Typed `:'<,'>Bang`.
   select_region(entry)
   child.type_keys("<Esc>")
-  H.type_cmd(child, "'<,'>Bang tr a-z A-Z")
+  H.type_cmd(child, "'<,'>Bang " .. cmd)
   expect_oracle(":'<,'>Bang", label, expected)
 
   -- `run()` with the region rebuilt from the marks.
@@ -345,7 +410,7 @@ T["differential"]["F2 every entry point matches Vim's own operator on the same s
   local region = region_from_marks(entry.ragged, selection)
   child.cmd("enew!")
   H.set_lines(child, entry.lines)
-  local res = H.run(child, "tr a-z A-Z", region)
+  local res = H.run(child, cmd, region)
   eq(res.ok, true, { fail_reason = label .. ": run() refused (" .. tostring(res.msg) .. ")" })
   expect_oracle("run()", label, expected)
 end
