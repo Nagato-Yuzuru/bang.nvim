@@ -11,17 +11,26 @@ local M = {}
 -- `only_range_before` is what keeps a foreign command out of the fallback (F10).
 local NAME_ERROR = "E492:"
 
----Whether everything before the command name could be a range and modifiers.
----A leading word can only be a modifier: no range starts with a letter, and the
----only letters a range holds are mark names, right after a quote.
+---The range text of a command line: what is left of the command name once the
+---leading colons, blanks and modifiers are gone. A range never starts with a
+---letter, so a leading word can only be a modifier -- and a modifier is not a
+---range (F6). The `:Bang` adapter reads its range through this as well.
 ---@param prefix string
----@return boolean
-local function only_range_before(prefix)
+---@return string
+function M.range_text(prefix)
   local rest = prefix:gsub("^%s*:*%s*", "")
   while rest:match("^%a") do
     rest = rest:gsub("^%a+!?%s*:*%s*", "")
   end
-  rest = rest:gsub("'.", "")
+  return rest
+end
+
+---Whether everything before the command name could be a range and modifiers.
+---The only letters a range holds are mark names, right after a quote.
+---@param prefix string
+---@return boolean
+local function only_range_before(prefix)
+  local rest = M.range_text(prefix):gsub("'.", "")
   -- Line numbers, offsets and separators, or a complete search range.
   return rest:match("^[%s%d%.%$%%,;%+%-<>]*$") ~= nil
     or rest:match("^[/?][^/?]*[/?][%s%d%.%$%%,;%+%-<>]*$") ~= nil

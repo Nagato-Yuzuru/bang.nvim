@@ -5,6 +5,16 @@
 -- sourced -- a lazy loader may still be holding it back (#17).
 
 local health = vim.health
+-- `start()`, `ok()`, `warn()`, `info()` and `error()` are the 0.10 names. The
+-- version gate has to speak on older Neovims too, where only the `report_*()`
+-- names exist, so the whole report goes through whichever set is there.
+local report = {
+  start = health.start or health.report_start,
+  ok = health.ok or health.report_ok,
+  warn = health.warn or health.report_warn,
+  info = health.info or health.report_info,
+  error = health.error or health.report_error,
+}
 
 local M = {}
 
@@ -49,23 +59,23 @@ end
 
 ---@param cfg bang.Config The effective configuration, or the defaults.
 local function check_keymaps(cfg)
-  health.start("Default keymaps")
+  report.start("Default keymaps")
   for _, key in ipairs(require("bang.adapters").default_keymap_state()) do
     local name = ("%s (%s)"):format(key.lhs, MODES[key.mode] or key.mode)
     if key.map ~= nil and key.map.rhs == key.rhs then
-      health.ok(("%s is mapped to %s"):format(name, key.rhs))
+      report.ok(("%s is mapped to %s"):format(name, key.rhs))
     elseif not cfg.keymaps then
-      health.info(("%s was not mapped by bang.nvim: keymaps = false"):format(name))
+      report.info(("%s was not mapped by bang.nvim: keymaps = false"):format(name))
     elseif key.map ~= nil then
       -- The silent skip issue #17 is about: the plugin looks installed, and
       -- the key does something else entirely.
       local owner = describe(key.map)
-      health.warn(
+      report.warn(
         ("%s was already mapped to %s, so bang.nvim left it alone"):format(name, owner),
         ("Map %s to a free key to get the plugin back."):format(key.rhs)
       )
     else
-      health.warn(
+      report.warn(
         ("%s is not mapped, although keymaps = true"):format(name),
         "plugin/bang.lua has not been sourced yet; a lazy loader may be deferring it."
       )
@@ -74,7 +84,7 @@ local function check_keymaps(cfg)
 end
 
 local function check_shell()
-  health.start("Shell")
+  report.start("Shell")
   -- Split the way the plugin splits it before spawning, so that an escaped
   -- space or a quoted path is read here exactly as `run()` reads it (R6).
   local program = require("bang.exec").shell_words()[1] or ""
@@ -83,9 +93,9 @@ local function check_shell()
     vim.inspect(vim.o.shellcmdflag)
   )
   if vim.fn.executable(program) == 1 then
-    health.ok(("%s is executable (%s)"):format(vim.inspect(program), where))
+    report.ok(("%s is executable (%s)"):format(vim.inspect(program), where))
   else
-    health.error(
+    report.error(
       ("%s is not executable (%s)"):format(vim.inspect(program), where),
       "Set 'shell' to a program that exists; no command can run until then."
     )
@@ -93,26 +103,26 @@ local function check_shell()
 end
 
 function M.check()
-  health.start("bang.nvim")
+  report.start("bang.nvim")
 
   -- The same gate as `plugin/bang.lua`. Below it the plugin registers nothing,
   -- so there is no configuration, keymap or shell of ours left to report on.
   if vim.fn.has("nvim-0.11") == 0 then
-    health.error(
+    report.error(
       ("Neovim %s, but bang.nvim requires 0.11 or newer"):format(neovim_version()),
       "The plugin is inactive: it registers no :Bang, no <Plug> mappings and no keys."
     )
     return
   end
-  health.ok(("Neovim %s"):format(neovim_version()))
+  report.ok(("Neovim %s"):format(neovim_version()))
 
-  health.start("Configuration")
+  report.start("Configuration")
   local config = require("bang.config")
   local cfg, err = config.get()
   if cfg then
-    health.ok(("vim.g.bang: %s"):format(options(config.defaults, cfg)))
+    report.ok(("vim.g.bang: %s"):format(options(config.defaults, cfg)))
   else
-    health.error(err, "bang.nvim falls back to its defaults until vim.g.bang is fixed.")
+    report.error(err, "bang.nvim falls back to its defaults until vim.g.bang is fixed.")
     -- Which is what `plugin/bang.lua` does, so the keys below are judged
     -- against the configuration the plugin actually loaded with.
     cfg = config.defaults

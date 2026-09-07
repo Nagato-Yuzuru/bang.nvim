@@ -131,10 +131,10 @@ function M.run(cmd, region, opts)
   end
 
   local input = regions.stdin(resolved, regions.text(buf, resolved))
-  -- Remembered here, as the shell receives it: the built-in `:!` replays a
-  -- command whatever its exit code, so `:!!` after `:!false` runs `false`
-  -- again (#8). Anything refused before this point never ran and is not
-  -- remembered.
+  -- Remembered here, once the command is expanded and the region resolved: the
+  -- built-in `:!` replays a command whatever its exit code, so `:!!` after
+  -- `:!false` runs `false` again, and it replays one whose shell never
+  -- started, too (#8). Anything refused above this line is not remembered.
   prev_cmd = cmd
   local result, exec_err = exec.run(cmd, input, cfg.timeout)
   if not result then
