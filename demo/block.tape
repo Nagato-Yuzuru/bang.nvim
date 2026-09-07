@@ -9,7 +9,7 @@ Enter
 Sleep 800ms
 Show
 
-Type "0" 
+Type "0"
 Type "8l"
 Sleep 600ms
 Ctrl+V
