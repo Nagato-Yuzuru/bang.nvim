@@ -28,5 +28,6 @@ the recording. One GIF per claim. A scene that shows two things is two scenes.
 
 Name your branch `type/topic` and title the pull request `type: subject`, with
 `type` one of `feat`, `fix`, `docs`, `refactor`, `test`, `ci` or `chore`. A pull
-request squash-merges with its title as the commit subject, so write the title
-as the commit you want.
+request squash-merges with its title as the commit subject, and the release
+notes are built from those subjects, so write the title as the changelog line
+you want. `mise run notes` shows the notes the next tag would get.

@@ -1,0 +1,41 @@
+# Release notes from the squash-merge subjects on main, grouped by type.
+# `mise run notes` previews the next release; release.yml runs `git cliff --latest`
+# for the tag it is drafting. Dependency bumps, CI, chores and tests stay out.
+# https://git-cliff.org/docs/configuration
+
+[changelog]
+trim = true
+body = """
+{% for group, commits in commits | group_by(attribute="group") -%}
+### {{ group | striptags | trim }}
+
+{% for commit in commits -%}
+- {% if commit.breaking %}**breaking:** {% endif %}{{ commit.message }}
+{% endfor %}
+{% endfor -%}
+
+{% if previous and previous.version -%}
+**Full Changelog**: https://github.com/Nagato-Yuzuru/bang.nvim/compare/{{ previous.version }}...{{ version }}
+{%- else -%}
+**Full Changelog**: https://github.com/Nagato-Yuzuru/bang.nvim/commits/{{ version }}
+{%- endif %}
+
+"""
+postprocessors = [
+  # `(#44)` from a squash merge becomes a link to the pull request.
+  { pattern = '\(#(\d+)\)', replace = "([#${1}](https://github.com/Nagato-Yuzuru/bang.nvim/pull/${1}))" },
+]
+
+[git]
+conventional_commits = true
+filter_unconventional = true
+commit_parsers = [
+  { message = "^feat", group = "<!-- 0 -->Features" },
+  { message = "^fix", group = "<!-- 1 -->Fixes" },
+  { message = "^perf", group = "<!-- 2 -->Performance" },
+  { message = "^refactor", group = "<!-- 3 -->Changes" },
+  { message = "^docs", group = "<!-- 4 -->Documentation" },
+  { message = "^(chore|ci|test|style|build)", skip = true },
+]
+tag_pattern = "v[0-9].*"
+sort_commits = "oldest"

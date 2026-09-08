@@ -13,7 +13,14 @@ jobs:
     timeout-minutes: 5
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-      # A draft: the notes are generated here, read and published by hand.
-      - run: gh release create "$GITHUB_REF_NAME" --verify-tag --generate-notes --draft
+        with:
+          # git-cliff walks the history back to the previous tag.
+          fetch-depth: 0
+          fetch-tags: true
+      - uses: jdx/mise-action@c2a87611a18de5b3828c5652fe268e992400cb5c # v4.3.0
+      # The notes come from the commit subjects, grouped by cliff.toml, as a
+      # draft: read, edit and publish by hand.
+      - run: git cliff --latest --output notes.md
+      - run: gh release create "$GITHUB_REF_NAME" --verify-tag --draft --notes-file notes.md
         env:
           GH_TOKEN: ${{ github.token }}
