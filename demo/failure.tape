@@ -5,7 +5,7 @@ Output demo/failure.gif
 Source demo/_theme.tape
 
 Hide
-Type@5ms `F=/tmp/bang-demo-$$.txt; printf '%s\n' 'banana' 'apple' 'cherry' > "$F"; nvim --clean --cmd 'set rtp^=.' -c 'runtime plugin/bang.lua' -c 'set laststatus=0 nonumber noswapfile cmdheight=3' "$F"`
+Type@5ms `F=/tmp/bang-demo-$$.txt; printf '%s\n' 'banana' 'apple' 'cherry' > "$F"; nvim --clean -u demo/_init.lua -c 'set cmdheight=3' "$F"`
 Enter
 Sleep 800ms
 Show

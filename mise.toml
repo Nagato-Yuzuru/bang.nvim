@@ -25,4 +25,11 @@ description = "Everything CI runs: lint, docs, test"
 
 [tasks.demo]
 description = "Re-render every demo GIF in demo/ from its tape (needs vhs, ttyd, ffmpeg)"
-run = "for t in demo/[a-z]*.tape; do vhs \"$t\"; done"
+# screenkey.nvim draws the keys into the recording. Pinned to a commit: its last
+# tag predates the option that keeps command-line typing out of the display.
+run = '''
+test -d .deps/screenkey.nvim || git clone --quiet --depth 1 https://github.com/NStefan002/screenkey.nvim .deps/screenkey.nvim
+git -C .deps/screenkey.nvim fetch --quiet --depth 1 origin 740e238d1f143cb5f3a9d932f9c5142d3581b986
+git -C .deps/screenkey.nvim checkout --quiet 740e238d1f143cb5f3a9d932f9c5142d3581b986
+for t in demo/[a-z]*.tape; do vhs "$t"; done
+'''
