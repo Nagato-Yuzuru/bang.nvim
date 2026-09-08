@@ -1,41 +1,62 @@
+# git-cliff ~ configuration file
+# https://git-cliff.org/docs/configuration
+#
 # Release notes from the squash-merge subjects on main, grouped by type.
 # `mise run notes` previews the next release; release.yml runs `git cliff --latest`
-# for the tag it is drafting. Dependency bumps, CI, chores and tests stay out.
-# https://git-cliff.org/docs/configuration
+# for the tag it is drafting.
 
 [changelog]
-trim = true
+# A Tera template to be rendered for each release in the changelog.
+# See https://keats.github.io/tera/#getting-started
+# No version header: the release page carries the tag.
 body = """
-{% for group, commits in commits | group_by(attribute="group") -%}
-### {{ group | striptags | trim }}
-
-{% for commit in commits -%}
-- {% if commit.breaking %}**breaking:** {% endif %}{{ commit.message }}
+{% for entry in commits | commit_groups(groups=commit_parsers_groups) %}
+    ### {{ entry.group | striptags | trim }}
+    {% for commit in entry.commits %}
+        - {% if commit.scope %}*({{ commit.scope }})* {% endif %}\
+            {% if commit.breaking %}[**breaking**] {% endif %}\
+            {{ commit.message }}\
+    {% endfor %}
 {% endfor %}
-{% endfor -%}
 
-{% if previous and previous.version -%}
-**Full Changelog**: https://github.com/Nagato-Yuzuru/bang.nvim/compare/{{ previous.version }}...{{ version }}
-{%- else -%}
-**Full Changelog**: https://github.com/Nagato-Yuzuru/bang.nvim/commits/{{ version }}
-{%- endif %}
-
+{% if previous and previous.version %}\
+    **Full Changelog**: <REPO>/compare/{{ previous.version }}...{{ version }}
+{% else %}\
+    **Full Changelog**: <REPO>/commits/{{ version }}
+{% endif %}\
 """
+# Remove leading and trailing whitespaces from the changelog's body.
+trim = true
+# An array of regex based postprocessors to modify the changelog.
 postprocessors = [
-  # `(#44)` from a squash merge becomes a link to the pull request.
-  { pattern = '\(#(\d+)\)', replace = "([#${1}](https://github.com/Nagato-Yuzuru/bang.nvim/pull/${1}))" },
+  # Replace the placeholder <REPO> with a URL.
+  { pattern = "<REPO>", replace = "https://github.com/Nagato-Yuzuru/bang.nvim" },
 ]
 
 [git]
+# Parse commits according to the conventional commits specification.
+# See https://www.conventionalcommits.org
 conventional_commits = true
+# Exclude commits that do not match the conventional commits specification.
 filter_unconventional = true
-commit_parsers = [
-  { message = "^feat", group = "<!-- 0 -->Features" },
-  { message = "^fix", group = "<!-- 1 -->Fixes" },
-  { message = "^perf", group = "<!-- 2 -->Performance" },
-  { message = "^refactor", group = "<!-- 3 -->Changes" },
-  { message = "^docs", group = "<!-- 4 -->Documentation" },
-  { message = "^(chore|ci|test|style|build)", skip = true },
+# An array of regex based parsers to modify commit messages prior to further processing.
+commit_preprocessors = [
+  # Replace the pull request number a squash merge appends with a link.
+  { pattern = '\(#([0-9]+)\)', replace = "([#${1}](<REPO>/pull/${1}))" },
 ]
-tag_pattern = "v[0-9].*"
+# Prevent commits that are breaking from being excluded by commit parsers.
+protect_breaking_commits = true
+# An array of regex based parsers for extracting data from the commit message.
+# Assigns commits to groups, in this order, and can exclude commits.
+commit_parsers = [
+  { message = "^feat", group = "Features" },
+  { message = "^fix", group = "Fixes" },
+  { message = "^perf", group = "Performance" },
+  { message = "^refactor", group = "Changes" },
+  { message = "^doc", group = "Documentation" },
+  { message = "^chore|^ci|^test|^style|^build", skip = true },
+  { message = ".*", group = "Other" },
+]
+# Order of commits in each group/release within the changelog.
+# Allowed values: newest, oldest
 sort_commits = "oldest"
