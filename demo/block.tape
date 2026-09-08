@@ -4,7 +4,7 @@ Output demo/block.gif
 Source demo/_theme.tape
 
 Hide
-Type@5ms `F=/tmp/bang-demo-$$.txt; printf '%s\n' 'apple   30' 'mango   10' 'kiwi    20' 'pear    40' > "$F"; nvim --clean --cmd 'set rtp^=.' -c 'runtime plugin/bang.lua' -c 'set laststatus=0 nonumber noswapfile cmdheight=2' "$F"`
+Type@5ms `F=/tmp/bang-demo-$$.txt; printf '%s\n' 'apple   30' 'mango   10' 'kiwi    20' 'pear    40' > "$F"; nvim --clean -u demo/_init.lua "$F"`
 Enter
 Sleep 800ms
 Show

@@ -4,7 +4,7 @@ Output demo/motion.gif
 Source demo/_theme.tape
 
 Hide
-Type@5ms `F=/tmp/bang-demo-$$.txt; printf '%s\n' 'The quick brown fox jumps.' 'over the lazy dog.' > "$F"; nvim --clean --cmd 'set rtp^=.' -c 'runtime plugin/bang.lua' -c 'set laststatus=0 nonumber noswapfile cmdheight=2' "$F"`
+Type@5ms `F=/tmp/bang-demo-$$.txt; printf '%s\n' 'The quick brown fox jumps.' 'over the lazy dog.' > "$F"; nvim --clean -u demo/_init.lua "$F"`
 Enter
 Sleep 800ms
 Show
