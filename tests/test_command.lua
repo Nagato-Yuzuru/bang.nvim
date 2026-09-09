@@ -232,6 +232,15 @@ T["D9.1 the : history is the only store"] = function()
   eq(H.history(child), {})
 end
 
+T["#53 (D9.1) a :Bang that was not typed is not in history()"] = function()
+  -- Only the command line writes the `:` history; `vim.cmd()` and mappings
+  -- do not, and the plugin records nothing of its own for a `:Bang` run.
+  H.set_lines(child, { "zz" })
+  child.lua([[vim.cmd("Bang tr z Z")]])
+  eq(H.get_lines(child), { "ZZ" })
+  eq(H.history(child), {})
+end
+
 T["D9.1 a repeated command moves to the top instead of duplicating"] = function()
   H.histadd(child, { "Bang sort", "Bang rev" })
   eq(H.history(child), { "rev", "sort" })

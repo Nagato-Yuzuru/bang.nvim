@@ -179,7 +179,9 @@ function M.run(cmd, region, opts)
   return true, nil, cmd
 end
 
----Every command run through `:Bang`, newest first, without duplicates.
+---The `:Bang` lines of the `:` history, newest first, without duplicates: what
+---was typed, and what the adapters recorded. A `:Bang` run from a mapping or
+---`vim.cmd()` never reaches that history (#53).
 ---@return string[]
 function M.history()
   return require("bang.history").list()

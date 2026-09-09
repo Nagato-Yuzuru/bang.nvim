@@ -77,7 +77,9 @@ function M.parse(entry)
   return vim.trim(rest)
 end
 
----Every command run through `:Bang`, newest first, without duplicates (D9.3).
+---The `:Bang` lines of the `:` history, newest first, without duplicates
+---(D9.3): what was typed, and what the adapters recorded. A `:Bang` run from
+---a mapping or `vim.cmd()` never reaches that history (#53).
 ---@return string[]
 function M.list()
   local seen, out = {}, {}
