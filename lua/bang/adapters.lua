@@ -229,7 +229,7 @@ end
 ---@return boolean|nil
 local function typed_visual_range(opts)
   local entry = fn.histget(":", -1)
-  local name = entry ~= "" and entry:find("Bang", 1, true)
+  local name = entry ~= "" and history.command_name(entry)
   if not name then
     return nil
   end

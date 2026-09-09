@@ -422,6 +422,32 @@ T["F10 (D9.3) a :substitute whose pattern contains Bang stays out of history()"]
   eq(H.history(child), { "sort" })
 end
 
+T["#52 (D9.3) history cuts after a pattern range that contains Bang"] = function()
+  -- The first "Bang" in the line is the pattern, not the command name.
+  H.set_lines(child, { "one", "Bang", "three" })
+  H.histadd(child, { "/Bang/Bang tr a-z A-Z" })
+  eq(H.history(child), { "tr a-z A-Z" })
+  -- With no line for the pattern to match the range does not resolve, and the
+  -- name is still found after it.
+  H.set_lines(child, { "one", "two" })
+  eq(H.history(child), { "tr a-z A-Z" })
+end
+
+T["#52 (D9.3) a pattern range escaping its delimiter is still a range"] = function()
+  H.set_lines(child, { "a/Bang" })
+  H.histadd(child, { [[/a\/Bang/Bang rev]], [[\/Bang sort]] })
+  eq(H.history(child), { "sort", "rev" })
+end
+
+T["#52 (D3.3) a typed range ending in a pattern that contains Bang is linewise"] = function()
+  -- `'<,/Bang/` covers exactly the selection's line, but is not `'<,'>`; the
+  -- command text must be read from after the range, or the two never compare.
+  H.set_lines(child, { "xx Bang yy" })
+  child.type_keys("gg", "0", "v", "l", "<Esc>")
+  H.type_cmd(child, "'<,/Bang/Bang tr a-z A-Z")
+  eq(H.get_lines(child), { "XX BANG YY" })
+end
+
 -- §12e Issue #8 rulings -----------------------------------------------------
 
 T["#8 :'<,'>Bang under 'selection' = exclusive filters exactly the selection"] = function()
