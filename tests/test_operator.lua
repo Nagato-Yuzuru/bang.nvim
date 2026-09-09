@@ -769,4 +769,45 @@ T["#8 an exclusive block widened leftwards by a <Tab> matches gU"] = function()
   eq(bang_does(lines, keys, "tr a-z A-Z").lines, expected.lines)
 end
 
+-- §12g Issue #54 a motion that covers nothing ------------------------------
+
+T["#54 g! with a motion that covers nothing changes nothing and does not prompt"] = function()
+  -- `l` on an empty line covers nothing. Vim leaves `'[` after `']` and `gU`
+  -- does nothing; read as two corners, the pair was the region from the
+  -- previous line's last character through the line break.
+  for _, motion in ipairs({ "l", "h", "0" }) do
+    H.stub_input(child, { "tr a-z A-Z" })
+    H.reset_notifications(child)
+    H.set_lines(child, { "abc", "" })
+    child.type_keys("G", "g!" .. motion)
+    eq(H.get_lines(child), { "abc", "" }, { fail_reason = "g!" .. motion .. " changed the text" })
+    eq(H.prompt_count(child), 0, { fail_reason = "g!" .. motion .. " prompted" })
+    eq(H.notifications(child), {}, { fail_reason = "g!" .. motion .. " notified" })
+    eq(H.history(child), {})
+  end
+end
+
+T["#54 Visual g! on an empty last line changes nothing and does not prompt"] = function()
+  -- Vim hands the operator the same inverted pair for `v` on the last line
+  -- when it is empty; on an empty line with a line after it the pair is not
+  -- inverted, the prompt opens, and the command filters nothing.
+  H.stub_input(child, { "tr a-z A-Z" })
+  H.set_lines(child, { "abc", "" })
+  child.type_keys("G", "v", "g!")
+  eq(H.get_lines(child), { "abc", "" })
+  eq(H.prompt_count(child), 0)
+end
+
+T["#54 . on a motion that covers nothing changes nothing and keeps the command"] = function()
+  H.stub_input(child, { "tr a-z A-Z" })
+  H.set_lines(child, { "abcd", "", "xyz" })
+  child.type_keys("gg", "0", "g!l")
+  eq(H.get_lines(child), { "Abcd", "", "xyz" })
+  child.type_keys("j", ".")
+  eq(H.get_lines(child), { "Abcd", "", "xyz" })
+  child.type_keys("j", "0", ".")
+  eq(H.get_lines(child), { "Abcd", "", "Xyz" })
+  eq(H.prompt_count(child), 1)
+end
+
 return T
