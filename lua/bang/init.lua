@@ -19,6 +19,13 @@ local M = {}
 ---plugin keeps its own. Separate from the operator's repeat state.
 local prev_cmd = nil
 
+---A number `nvim_buf_is_valid()` accepts without raising: whole and finite.
+---@param n any
+---@return boolean
+local function is_bufnr(n)
+  return type(n) == "number" and n == math.floor(n) and math.abs(n) ~= math.huge
+end
+
 ---@param msg string
 ---@param expanded string|nil The command as the shell received it, when it got that far.
 ---@return false, string, string|nil
@@ -100,6 +107,12 @@ end
 ---a repeat must re-run (R17, F5).
 function M.run(cmd, region, opts)
   opts = opts or {}
+  if type(opts) ~= "table" then
+    return fail(("bang: opts must be a table, got %s"):format(type(opts)))
+  end
+  if opts.buf ~= nil and not is_bufnr(opts.buf) then
+    return fail(("bang: opts.buf must be a buffer number, got %s"):format(vim.inspect(opts.buf)))
+  end
   local cfg, config_err = config.get()
   if not cfg then
     return fail(config_err --[[@as string]])
@@ -111,6 +124,9 @@ function M.run(cmd, region, opts)
   end
   if not api.nvim_buf_is_valid(buf) then
     return fail(("bang: buffer %s is not valid"):format(vim.inspect(opts.buf)))
+  end
+  if not api.nvim_buf_is_loaded(buf) then
+    return fail(("bang: buffer %d is not loaded, nothing was replaced"):format(buf))
   end
   if not vim.bo[buf].modifiable then
     return fail("bang: buffer is not modifiable, nothing was replaced")

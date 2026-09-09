@@ -41,8 +41,14 @@ local function invalid(opts, source)
     )
   end
   local timeout = opts.timeout
-  if timeout ~= nil and (type(timeout) ~= "number" or timeout <= 0) then
-    return ("bang: %s.timeout must be a positive number of milliseconds, got %s"):format(
+  -- Whole and finite: `0.5` would report "timed out after 0 ms" on every run,
+  -- and `math.huge` is not a wait (#49).
+  local whole = type(timeout) == "number"
+    and timeout > 0
+    and timeout < math.huge
+    and timeout == math.floor(timeout)
+  if timeout ~= nil and not whole then
+    return ("bang: %s.timeout must be a positive whole number of milliseconds, got %s"):format(
       source,
       vim.inspect(timeout)
     )
