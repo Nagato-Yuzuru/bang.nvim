@@ -153,7 +153,10 @@ function M.run(cmd, stdin, timeout)
   local started = vim.uv.hrtime()
   local ok, proc = pcall(vim.system, M.argv(cmd), {
     stdin = stdin,
-    text = true,
+    -- Raw bytes: `text = true` would turn every `\r\n` into `\n` before the
+    -- plugin sees the output, and a `\r` before the `\n` is a byte the
+    -- command wrote (#51, DEV-5).
+    text = false,
     cwd = vim.fn.getcwd(),
     detach = true,
   })

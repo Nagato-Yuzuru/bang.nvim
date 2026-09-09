@@ -463,8 +463,8 @@ function M.stdin(resolved, lines)
 end
 
 ---Split command output into buffer lines (D7.1). Zero-byte output yields no
----lines at all. A bare `\r` is not a line break here, unlike in the built-in
----filter (DEV-5).
+---lines at all. A `\r` is not a line break here, bare or before the `\n`, and
+---stays in the line, unlike in the built-in filter (DEV-5, #51).
 ---
 ---The trailing newline is dropped because the plugin's own line joining put it
 ---there -- unless the region's stdin already ended in one, which happens when a
