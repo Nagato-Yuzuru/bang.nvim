@@ -115,12 +115,25 @@ end
 ---short last line's own end -- on 0.11 and 0.12 alike -- and cannot say how far
 ---right the block reached, so a `width` measured while the block was whole is
 ---handed over instead and the marks then name only the lines (D3.2).
+---
+---Nil when the motion covered nothing: `l` on an empty line, `v` on one. Vim
+---says so by leaving `'[` after `']`, and its own operators do nothing then.
+---The pair is an ordered span, not two corners, so it cannot be handed to
+---`run()`, which reads a reversed pair as the same region the other way round
+---and would filter the text between the two marks (#54).
 ---@param kind "char"|"line"|"block"
 ---@param ragged boolean
 ---@param width integer|nil Width in screen cells, for a `.` on a block.
----@return bang.Region
+---@return bang.Region|nil
 function M.region_of_marks(kind, ragged, width)
-  local region = from_positions(kind, fn.getpos("'["), fn.getpos("']"), ragged)
+  local open, close = fn.getpos("'["), fn.getpos("']")
+  -- With a width, `']` names only the last line and its column is whatever a
+  -- short line clamped it to, so only the lines can say the span is empty.
+  local inverted = open[2] > close[2] or (open[2] == close[2] and open[3] > close[3] and not width)
+  if inverted then
+    return nil
+  end
+  local region = from_positions(kind, open, close, ragged)
   region.width = width
   return region
 end
@@ -207,7 +220,9 @@ function M.opfunc(motion)
       return
     end
     local region = M.region_of_marks(motion, redo.ragged == true, redo.width)
-    require("bang").run(redo.cmd, region, { buf = buf, expanded = true })
+    if region then
+      require("bang").run(redo.cmd, region, { buf = buf, expanded = true })
+    end
     return
   end
 
@@ -220,6 +235,9 @@ function M.opfunc(motion)
     shape = { ragged = current.capture.ragged, width = regions.block_width(buf, region) }
   else
     region = M.region_of_marks(motion, false)
+    if not region then
+      return -- Nothing covered: no prompt, no write, no history, `.` untouched.
+    end
   end
   prompt(buf, region, current.capture.visual, shape)
 end

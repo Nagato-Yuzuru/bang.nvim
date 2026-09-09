@@ -41,6 +41,8 @@ local CMD, OP = "tr a-z A-Z", "gU"
 -- `ragged` marks a selection the mark pair cannot describe on its own: after
 -- `CTRL-V $` the `'>` column is the cursor's, so the Lua API needs the flag.
 -- `cmd` and `op` override `CMD` and `OP` for the entries that write nothing.
+-- `noop` marks an entry whose oracle legitimately changes nothing: the guard
+-- against a vacuous comparison inverts, and the positions are not compared.
 local CORPUS = {
   ["char single line"] = {
     lines = { "password: hunter2" },
@@ -198,6 +200,23 @@ local CORPUS = {
     cmd = "true",
     op = "d",
   },
+  -- #54's shape: a selection that covers nothing. `v` on an empty last line
+  -- reaches the operator as `'[` after `']`, and Vim's own operators leave the
+  -- text alone -- `d` too, there being no line break left to take. Both leave
+  -- the inverted pair behind, which no write can reproduce, so these two are
+  -- compared on the text alone.
+  ["char on an empty last line"] = {
+    lines = { "abc", "" },
+    keys = { "G", "v" },
+    noop = true,
+  },
+  ["char on an empty last line, zero output"] = {
+    lines = { "abc", "" },
+    keys = { "G", "v" },
+    cmd = "true",
+    op = "d",
+    noop = true,
+  },
 }
 
 local LABELS = {
@@ -231,6 +250,8 @@ local LABELS = {
   "char zero output to end of line",
   "linewise zero output",
   "block zero output",
+  "char on an empty last line",
+  "char on an empty last line, zero output",
 }
 
 -- Every entry runs under both 'selection' values. `gU` obeys 'selection' too,
@@ -367,7 +388,9 @@ end
 local function expect_oracle(entry_point, label, expected)
   local where = ("%s: %s differs from %s"):format(label, entry_point, expected.name)
   eq(H.get_lines(child), expected.lines, { fail_reason = where })
-  eq(positions(), expected.pos, { fail_reason = where .. " in '[, '] or the cursor" })
+  if expected.pos then
+    eq(positions(), expected.pos, { fail_reason = where .. " in '[, '] or the cursor" })
+  end
 end
 
 T["differential"] = MiniTest.new_set({ parametrize = params })
@@ -383,12 +406,19 @@ T["differential"]["F2 every entry point matches Vim's own operator on the same s
 
   -- The oracle: Vim filters the selection itself.
   local expected = oracle(entry)
-  neq(expected.lines, entry.lines, {
-    fail_reason = ("%s: %s changed nothing, so the comparison would be vacuous"):format(
-      label,
-      expected.name
-    ),
-  })
+  if entry.noop then
+    eq(expected.lines, entry.lines, {
+      fail_reason = ("%s: %s changed the text of a no-op entry"):format(label, expected.name),
+    })
+    expected.pos = nil
+  else
+    neq(expected.lines, entry.lines, {
+      fail_reason = ("%s: %s changed nothing, so the comparison would be vacuous"):format(
+        label,
+        expected.name
+      ),
+    })
+  end
 
   -- Visual `g!`. The single prompt is answered with this entry's command; the
   -- shared hook stubs the default one (D4.2: an unanswered prompt cancels and
