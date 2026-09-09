@@ -71,6 +71,32 @@ T["D5.3 :'<,'>Bang on a rectangular block stays rectangular"] = function()
   eq(H.get_lines(child), { "aBCdef", "aBCdef" })
 end
 
+T["#50 (D5.3) a $ block survives a blockwise selection in another buffer"] = function()
+  -- The flag that completes `'<`/`'>` is per buffer, as they are; one slot for
+  -- every buffer left the `$` block a rectangle after a visit elsewhere.
+  H.set_lines(child, { "aa", "bbbbbb", "cc" })
+  child.type_keys("gg", "0", "<C-v>", "2j", "$", "<Esc>")
+  local home = child.api.nvim_get_current_buf()
+  child.cmd("enew")
+  H.set_lines(child, { "xxx", "xxx" })
+  child.type_keys("gg", "0", "<C-v>", "j", "l", "<Esc>")
+  child.cmd("buffer " .. home)
+  H.type_cmd(child, "'<,'>Bang tr a-z A-Z")
+  eq(H.get_lines(child), { "AA", "BBBBBB", "CC" })
+end
+
+T["#50 (D5.3) a $ block in another buffer does not widen a rectangle"] = function()
+  H.set_lines(child, { "abcdef", "abcdef" })
+  child.type_keys("gg", "0", "l", "<C-v>", "j", "l", "<Esc>")
+  local home = child.api.nvim_get_current_buf()
+  child.cmd("enew")
+  H.set_lines(child, { "xxx", "xxx" })
+  child.type_keys("gg", "0", "<C-v>", "j", "$", "<Esc>")
+  child.cmd("buffer " .. home)
+  H.type_cmd(child, "'<,'>Bang tr a-z A-Z")
+  eq(H.get_lines(child), { "aBCdef", "aBCdef" })
+end
+
 T["D3.3 :'<,'>Bang from a linewise selection runs linewise"] = function()
   H.set_lines(child, { "c", "a", "b" })
   child.type_keys("gg", "V", "2j", "<Esc>")

@@ -51,12 +51,14 @@ end
 ---@type { cmd: string, ragged: boolean, width: integer|nil }|nil
 local redo = nil
 
----Whether the last blockwise Visual selection was made with `$`. It is only
----readable while the selection is live -- curswant is a column again by the time
----a `:Bang` callback runs, and `'<`/`'>` cannot tell `$` from an overhang -- so
----it is recorded on the way out of the mode, the last moment it exists (R1, F4).
----@type { buf: integer, ragged: boolean }|nil
-local visual_ragged = nil
+---Whether the buffer's last blockwise Visual selection was made with `$`. It is
+---only readable while the selection is live -- curswant is a column again by
+---the time a `:Bang` callback runs, and `'<`/`'>` cannot tell `$` from an
+---overhang -- so it is recorded on the way out of the mode, the last moment it
+---exists (R1, F4). It lives in the buffer, like the marks and `visualmode()`
+---it completes: one slot for all buffers let a block in another buffer turn a
+---`$` block back into a rectangle (#50).
+local RAGGED = "bang_visual_ragged"
 
 ---Whether the live selection was made with `$`: curswant is maxcol exactly then.
 ---@return boolean
@@ -276,11 +278,7 @@ local function command_region(opts, buf)
   if not visual then
     return M.region_of_range(opts.line1, opts.line2), false
   end
-  local ragged = kind == "block"
-    and visual_ragged ~= nil
-    and visual_ragged.buf == buf
-    and visual_ragged.ragged
-  return M.region_of_selection(kind, ragged == true), true
+  return M.region_of_selection(kind, kind == "block" and vim.b[buf][RAGGED] == true), true
 end
 
 ---`:Bang[!] [cmd]`. Without a command, pick one from the history (D9.4).
@@ -380,7 +378,7 @@ function M.setup_autocmds()
       -- Leaving the mode is the last moment `$` is readable, and curswant
       -- survives even the `<Esc>` that ends a `:normal!` block (F4). Every block
       -- records, so a `$` one cannot leave its flag behind for the next.
-      visual_ragged = { buf = api.nvim_get_current_buf(), ragged = ragged_now() }
+      vim.b[api.nvim_get_current_buf()][RAGGED] = ragged_now()
     end,
   })
   api.nvim_create_autocmd("ModeChanged", {
