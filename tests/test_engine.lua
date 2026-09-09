@@ -1077,6 +1077,28 @@ T["R11 (DEV-5) a bare carriage return in the buffer stays inside the line"] = fu
   eq(H.get_lines(child), H.builtin_cr_lines(child), { fail_reason = "the built-in's \\r handling" })
 end
 
+T["#51 (DEV-5) the carriage return of a CRLF in the output stays inside the line"] = function()
+  -- The built-in drops it, through a pipe and through a temp file alike.
+  H.set_lines(child, { "zz" })
+  local res = H.run(child, [[printf 'ab\r\ncd\r\n']], H.linewise(1, 1))
+  eq(res.ok, true)
+  eq(H.get_lines(child), { "ab\r", "cd\r" })
+
+  child.cmd("enew!")
+  H.set_lines(child, { "zz" })
+  child.cmd([[silent! %!printf 'ab\r\ncd\r\n']])
+  eq(H.get_lines(child), { "ab", "cd" }, { fail_reason = "the built-in's \\r\\n handling" })
+end
+
+T["#51 (F3) a line ending in a carriage return comes back from cat as it went in"] = function()
+  -- A CRLF file opened with 'fileformat' = unix shows the \r as ^M; the
+  -- filter hands the shell "ab\r\n" and must not lose the \r on the way back.
+  H.set_lines(child, { "ab\r", "cd" })
+  local res = H.run(child, "cat", H.linewise(1, 2))
+  eq(res.ok, true)
+  eq(H.get_lines(child), { "ab\r", "cd" })
+end
+
 T["R12 (D6.1) a doubled backslash before % reaches the shell as one backslash"] = function()
   local log = H.use_log_shell(child)
   H.set_lines(child, { "one" })

@@ -273,8 +273,10 @@ Output order ~
         captured separately.
 
 Line breaks ~
-        The built-in splits a line on a bare <CR>. bang.nvim splits on <NL>
-        only; a bare <CR> stays inside the line.
+        The built-in splits a line on a bare <CR>, and drops the <CR> of a
+        <CR><NL> pair. bang.nvim splits on <NL> only; every <CR> stays inside
+        the line, so a line that ends in one comes back from "cat" as it
+        went in.
 
 Known gaps ~
         • "%", "#", "##", "#<n>", "<cword>", "<cWORD>", "<cfile>" and
