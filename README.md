@@ -41,10 +41,11 @@ needed. Options live in `vim.g.bang`, and `:help bang-config` lists them.
 
 ## What it does
 
-**A motion filters exactly the text it covers.** `g!iw`, then `tr a-z A-Z`: one
-word changes, and the rest of the line stays.
+**A motion filters exactly the text it covers.** On the password of a Secret,
+`g!iW`, then `base64`: the value is encoded in place, and the key beside it
+stays. `g!iW` with `base64 -d` brings it back.
 
-![g!iw on one word, then tr a-z A-Z: only that word changes](demo/motion.gif)
+![g!iW on a YAML value, then base64: the value is encoded in place, the key stays; base64 -d brings it back](demo/motion.gif)
 
 **A Visual block filters one column.** In a list of names and numbers, `<C-v>`
 down the numbers, then `g!` with `sort`. The numbers reorder; the names beside
