@@ -1007,6 +1007,58 @@ T["R8 (D3.4) an invalid vim.g.bang at call time returns false naming the key"] =
   eq(H.get_lines(child), { "one" })
 end
 
+T["#49 (R8) a non-table opts is reported, not raised"] = function()
+  H.set_lines(child, { "one" })
+  for _, opts in ipairs({ 5, true, "buf" }) do
+    local res = H.run_pcall(child, "tr a-z A-Z", H.linewise(1, 1), opts)
+    eq(res.threw, false, { fail_reason = "run() raised on opts = " .. tostring(opts) })
+    eq(res.ok, false)
+    neq(res.msg:find("opts", 1, true), nil)
+  end
+  local res = H.run_pcall(child, "tr a-z A-Z", H.linewise(1, 1), { buf = "x" })
+  eq(res.threw, false)
+  eq(res.ok, false)
+  neq(res.msg:find("opts.buf", 1, true), nil)
+  eq(H.get_lines(child), { "one" })
+end
+
+T["#49 (R8) an unloaded buffer is reported as such, not as an empty one"] = function()
+  local buf = child.lua_get([[vim.fn.bufadd("bang-unloaded-49.txt")]])
+  local res = H.run_pcall(child, "tr a-z A-Z", H.linewise(1, 1), { buf = buf })
+  eq(res.threw, false)
+  eq(res.ok, false)
+  neq(res.msg:find("not loaded", 1, true), nil)
+  eq(res.msg:find("outside", 1, true), nil)
+end
+
+T["#49 (D8.1) a timeout must be a whole number of milliseconds"] = function()
+  MiniTest.expect.error(function()
+    H.setup(child, { timeout = 0.5 })
+  end, "timeout")
+  MiniTest.expect.error(function()
+    child.lua([[require("bang").setup({ timeout = math.huge })]])
+  end, "timeout")
+  H.set_lines(child, { "one" })
+  child.lua([[vim.g.bang = { timeout = 0.5 }]])
+  local res = H.run_pcall(child, "tr a-z A-Z", H.linewise(1, 1))
+  eq(res.threw, false)
+  eq(res.ok, false)
+  neq(res.msg:find("timeout", 1, true), nil)
+  eq(res.msg:find("timed out", 1, true), nil)
+  eq(H.get_lines(child), { "one" })
+end
+
+T["#49 (D6.1) a 'shell' that does not exist is reported without an internal location"] = function()
+  H.set_lines(child, { "one" })
+  child.o.shell = "/definitely/not/a/shell"
+  local res = H.run(child, "echo x", H.linewise(1, 1))
+  eq(res.ok, false)
+  neq(res.msg:find("/definitely/not/a/shell", 1, true), nil)
+  neq(res.msg:find("ENOENT", 1, true), nil, { fail_reason = "the errno text must stay" })
+  eq(res.msg:match(":%d+: "), nil, { fail_reason = "the message carried a source location" })
+  eq(H.get_lines(child), { "one" })
+end
+
 T["R9 (D7.6) a region starting past the last line is refused"] = function()
   local lines = { "alpha", "bravo" }
   H.set_lines(child, lines)

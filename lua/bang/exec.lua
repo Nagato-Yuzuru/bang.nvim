@@ -161,7 +161,10 @@ function M.run(cmd, stdin, timeout)
     detach = true,
   })
   if not ok then
-    return nil, ("bang: could not run %s: %s"):format(vim.o.shell, proc)
+    -- `vim.system` raises with its own source location in front of the errno
+    -- text; the location is not the user's (#49).
+    local reason = tostring(proc):gsub("^[^%s]-:%d+: ", "")
+    return nil, ("bang: could not run %s: %s"):format(vim.o.shell, reason)
   end
 
   local result = proc:wait(timeout)
