@@ -25,15 +25,59 @@ function M.range_text(prefix)
   return rest
 end
 
+---`text` with every complete search pattern -- `/pat/`, `?pat?`, a backslash
+---escaping the delimiter -- taken out, and every other escaped character with
+---it (`\/`, `\?` and `\&` are ranges too). Nil when a pattern is left open.
+---@param text string
+---@return string|nil
+local function without_patterns(text)
+  local out, i = {}, 1
+  while i <= #text do
+    local char = text:sub(i, i)
+    if char == "\\" then
+      i = i + 2
+    elseif char == "/" or char == "?" then
+      local j = i + 1
+      while j <= #text and text:sub(j, j) ~= char do
+        j = j + (text:sub(j, j) == "\\" and 2 or 1)
+      end
+      if j > #text then
+        return nil
+      end
+      i = j + 1
+    else
+      out[#out + 1] = char
+      i = i + 1
+    end
+  end
+  return table.concat(out)
+end
+
 ---Whether everything before the command name could be a range and modifiers.
----The only letters a range holds are mark names, right after a quote.
+---The only letters a range holds are mark names, right after a quote, and
+---whatever its search patterns contain.
 ---@param prefix string
 ---@return boolean
 local function only_range_before(prefix)
-  local rest = M.range_text(prefix):gsub("'.", "")
-  -- Line numbers, offsets and separators, or a complete search range.
-  return rest:match("^[%s%d%.%$%%,;%+%-<>]*$") ~= nil
-    or rest:match("^[/?][^/?]*[/?][%s%d%.%$%%,;%+%-<>]*$") ~= nil
+  local rest = without_patterns(M.range_text(prefix))
+  -- Marks, then line numbers, offsets and separators.
+  return rest ~= nil and rest:gsub("'.", ""):match("^[%s%d%.%$%%,;%+%-<>]*$") ~= nil
+end
+
+---Where the command name of a `:Bang` line starts: the first "Bang" that only
+---a range and modifiers precede. A pattern range may contain the word itself,
+---as in `/Bang/Bang tr a-z A-Z`, and that one is part of the range (#52).
+---@param entry string
+---@return integer|nil
+function M.command_name(entry)
+  local from = 1
+  while true do
+    local pos = entry:find("Bang", from, true)
+    if pos == nil or only_range_before(entry:sub(1, pos - 1)) then
+      return pos
+    end
+    from = pos + 1
+  end
 end
 
 ---Record a command line, as if the user had typed it. A duplicate moves to the
@@ -49,7 +93,7 @@ end
 ---@param entry string
 ---@return string|nil
 function M.parse(entry)
-  local name = entry:find("Bang", 1, true)
+  local name = M.command_name(entry)
   if not name then
     return nil
   end
@@ -57,10 +101,11 @@ function M.parse(entry)
   if not ok then
     -- An unresolvable range -- an unset mark, a pattern matching nothing --
     -- says nothing about the command name, so try again without it. Only then:
-    -- re-parsing anything else would let a `:substitute` whose pattern contains
-    -- "Bang" surface its fragments in the picker (F10).
+    -- `command_name` already refused to cut inside a `:substitute` whose
+    -- pattern contains "Bang", so its fragments cannot surface in the picker
+    -- (F10).
     local message = tostring(parsed)
-    if message:find(NAME_ERROR, 1, true) or not only_range_before(entry:sub(1, name - 1)) then
+    if message:find(NAME_ERROR, 1, true) then
       return nil
     end
     ok, parsed = pcall(vim.api.nvim_parse_cmd, entry:sub(name), {})
