@@ -221,8 +221,10 @@ require("bang").run({cmd}, {region}, {opts})
                                                               *bang.history()*
 require("bang").history()
 
-    Every command run through |:Bang|, newest first, without duplicates,
-    read out of the ":" history.
+    The :Bang lines of the ":" history, newest first, without duplicates:
+    what was typed at the command line, and what g! and the picker
+    recorded there, see |bang-history|. A :Bang run from a mapping, <Cmd>
+    or vim.cmd() never reaches that history and is not listed.
 
     Return: ~
         (string[])
