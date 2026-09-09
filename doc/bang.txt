@@ -104,6 +104,11 @@ offers them, and 'shada' persists them. |@:| repeats the last command line
 you typed: it replays a typed :Bang, not a run made with g!, which |.|
 repeats. Failed runs and cancelled prompts record nothing.
 
+A replayed "'<,'>Bang", from |q:| or the picker, acts on the buffer's last
+Visual selection as |gv| would reselect it at that moment, "$" included,
+not on the one it was recorded from. Before a selection is made in a new
+session, "'<,'>" is a line range like any other.
+
 MARKS AND THE CURSOR                                              *bang-marks*
 
 "'[" and "']" bracket the bytes the run wrote, as |']| describes them, and
