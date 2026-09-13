@@ -5,7 +5,7 @@ actionlint = "1.7.12"
 "cargo:selene" = { version = "0.31.0", os = ["macos"] }
 dprint = "0.57.4"
 git-cliff = "2.14.1"
-prek = "0.5.2"
+prek = "0.5.3"
 stylua = "2.5.2"
 
 [tasks.test]
