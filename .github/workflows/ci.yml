@@ -4,6 +4,10 @@ on:
   push:
     branches: [main]
   pull_request:
+  # Daily, so a Neovim nightly change shows up within a day rather than on the
+  # next unrelated pull request.
+  schedule:
+    - cron: "17 4 * * *"
   workflow_dispatch:
 
 concurrency:
@@ -32,8 +36,9 @@ jobs:
     name: test (Neovim ${{ matrix.neovim }})
     runs-on: ubuntu-latest
     timeout-minutes: 10
-    # nightly may break; it reports but never blocks.
-    continue-on-error: ${{ matrix.neovim == 'nightly' }}
+    # On a pull request nightly reports but never blocks; on the daily run a
+    # nightly failure fails the run, which is what sends the notification.
+    continue-on-error: ${{ matrix.neovim == 'nightly' && github.event_name != 'schedule' }}
     strategy:
       fail-fast: false
       matrix:
