@@ -810,4 +810,93 @@ T["#54 . on a motion that covers nothing changes nothing and keeps the command"]
   eq(H.prompt_count(child), 1)
 end
 
+-- §12h Issue #69 a forced blockwise motion -----------------------------------
+
+--- Run `operator` with the forced blockwise `motion` from `start` in `lines`,
+--- after a cancelled block elsewhere: since 0.13 an operator target no longer
+--- moves `'<`/`'>`, so they still name that block when the operator runs.
+local function forced_block(lines, start, motion, operator)
+  child.cmd("enew!")
+  H.set_lines(child, lines)
+  child.type_keys("gg", "0", "<C-v>", "l", "<Esc>")
+  child.type_keys(start, operator, "<C-v>", motion)
+  return H.get_lines(child)
+end
+
+T["#69 g!<C-v>{motion} filters the motion's block, not the last selection"] = function()
+  H.stub_input(child, { "tr a-z X" })
+  eq(forced_block({ "abcd", "abcd", "abcd", "abcd" }, "3G1|", "j", "g!"), {
+    "abcd",
+    "abcd",
+    "Xbcd",
+    "Xbcd",
+  })
+end
+
+T["#69 g!<C-v>{motion} covers the block gU<C-v>{motion} covers"] = function()
+  -- `']` names the block's right edge only as an offset past a short last line,
+  -- and `(` and `?` motions end on the line above it, the one corner `g!` does
+  -- not see the cursor on.
+  local cases = {
+    { { "seed", "ab", "cd" }, "2G1|", "j" },
+    { { "seed", "ab", "cd" }, "2G1|", "e" },
+    { { "ab cd" }, "gg1|", "w" },
+    { { "abcdef", "abcdef", "ab" }, "gg4|", "2j" },
+    { { "abcdef", "abcdef", "ab" }, "3G1|", "?f<CR>" },
+    { { "abcdef", "abcdef", "ab" }, "3G2|", "?e<CR>" },
+    { { "abcdef", "xy", "abcdef" }, "gg5|", "2j" },
+  }
+  for _, selection in ipairs({ "inclusive", "exclusive" }) do
+    child.o.selection = selection
+    for _, c in ipairs(cases) do
+      local lines, start, motion = unpack(c)
+      H.stub_input(child, { "tr a-z A-Z" })
+      local expected = forced_block(lines, start, motion, "gU")
+      eq(forced_block(lines, start, motion, "g!"), expected, {
+        fail_reason = ("%s g!<C-v>%s on %s, 'selection' %s"):format(
+          start,
+          motion,
+          vim.inspect(lines),
+          selection
+        ),
+      })
+    end
+  end
+end
+
+T["#69 . repeats g!<C-v>{motion} at the block's full width"] = function()
+  H.stub_input(child, { "tr a-z A-Z" })
+  local lines = { "abcdef", "abcdef", "ab", "", "abcdef", "abcdef", "ab" }
+  eq(forced_block(lines, "gg4|", "2j", "g!"), {
+    "aBCDef",
+    "aBCDef",
+    "aB",
+    "",
+    "abcdef",
+    "abcdef",
+    "ab",
+  })
+  child.type_keys("5G4|", ".")
+  eq(H.prompt_count(child), 1)
+  eq(H.get_lines(child), { "aBCDef", "aBCDef", "aB", "", "aBCDef", "aBCDef", "aB" })
+end
+
+T["#69 g!<C-v>{motion} leaves 'virtualedit' as it was"] = function()
+  local function values()
+    return child.lua_get([[{
+      vim.api.nvim_get_option_value("virtualedit", { scope = "local" }),
+      vim.api.nvim_get_option_value("virtualedit", { scope = "global" }),
+    }]])
+  end
+  child.o.virtualedit = "onemore"
+  H.stub_input(child, { "tr a-z A-Z" })
+  H.set_lines(child, { "abcdef", "abcdef", "ab" })
+  local before = values()
+  child.type_keys("gg4|", "g!", "<C-v>", "2j")
+  eq(H.prompt_count(child), 1)
+  eq(values(), before, { fail_reason = "a run left the option changed" })
+  child.type_keys("g!", "<C-v>", "<Esc>")
+  eq(values(), before, { fail_reason = "an aborted operator left the option changed" })
+end
+
 return T
