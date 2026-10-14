@@ -51,6 +51,52 @@ end
 ---@type { cmd: string, ragged: boolean, width: integer|nil }|nil
 local redo = nil
 
+---Where a forced blockwise motion (`g!<C-v>j`) leaves its block. Up to 0.12 Vim
+---puts it in `'<`/`'>`, which name both screen columns, while `'[`/`']` lose
+---them. From 0.13 an operator target no longer moves `'<`/`'>`, which then name
+---whatever the user last selected (neovim/neovim#42119, #69), and `'[`/`']`
+---name the block's corners instead (neovim/neovim#42321) -- the right one as an
+---offset past a short last line, which Vim only keeps while 'virtualedit'
+---allows a position there.
+local FORCED_BLOCK_IN_MARKS = fn.has("nvim-0.13") == 1
+
+---The window and its own 'virtualedit' while a forced blockwise motion runs
+---with "block" added, nil otherwise.
+---@type { win: integer, value: string }|nil
+local widened = nil
+
+---Add "block" to 'virtualedit' for a forced blockwise motion of this operator,
+---so that `']` keeps the block's right edge. Called as the motion is forced,
+---before it runs. Only the window's own value is touched, as in `region.lua`.
+local function widen_virtualedit()
+  if widened or vim.v.operator ~= "g@" or vim.o.operatorfunc ~= OPFUNC then
+    return
+  end
+  local value = api.nvim_get_option_value("virtualedit", { win = 0 })
+  local flags = vim.split(value, ",", { trimempty = true })
+  if vim.list_contains(flags, "block") or vim.list_contains(flags, "all") then
+    return
+  end
+  local scope = { scope = "local", win = 0 }
+  widened =
+    { win = api.nvim_get_current_win(), value = api.nvim_get_option_value("virtualedit", scope) }
+  flags = vim.tbl_filter(function(flag)
+    return flag ~= "none" and flag ~= "NONE"
+  end, flags)
+  table.insert(flags, "block")
+  api.nvim_set_option_value("virtualedit", table.concat(flags, ","), scope)
+end
+
+---Give the window back its own 'virtualedit': when the operator function runs,
+---and when an operator is abandoned.
+local function restore_virtualedit()
+  local saved = widened
+  widened = nil
+  if saved and api.nvim_win_is_valid(saved.win) then
+    api.nvim_set_option_value("virtualedit", saved.value, { scope = "local", win = saved.win })
+  end
+end
+
 ---Whether the buffer's last blockwise Visual selection was made with `$`. It is
 ---only readable while the selection is live -- curswant is a column again by
 ---the time a `:Bang` callback runs, and `'<`/`'>` cannot tell `$` from an
@@ -207,6 +253,7 @@ end
 ---'operatorfunc'. Called by `g@` once the motion is known, and again by `.`.
 ---@param motion "char"|"line"|"block"
 function M.opfunc(motion)
+  restore_virtualedit()
   local current = consume()
   local buf = api.nvim_get_current_buf()
 
@@ -226,19 +273,21 @@ function M.opfunc(motion)
     return
   end
 
-  -- A block goes through `'<`/`'>`, which Vim sets for a Visual selection and
-  -- for a forced motion (`g!<C-v>j`) alike: they name both of the block's screen
+  -- A Visual block goes through `'<`/`'>`: they name both of the block's screen
   -- columns, while `']` is clamped to a short last line and loses the right one.
-  local region, shape
-  if motion == "block" then
+  -- A forced blockwise motion goes wherever this Neovim puts it.
+  local region
+  if motion == "block" and (current.capture.visual or not FORCED_BLOCK_IN_MARKS) then
     region = M.region_of_selection(motion, current.capture.ragged)
-    shape = { ragged = current.capture.ragged, width = regions.block_width(buf, region) }
   else
     region = M.region_of_marks(motion, false)
     if not region then
       return -- Nothing covered: no prompt, no write, no history, `.` untouched.
     end
   end
+  local shape = motion == "block"
+      and { ragged = current.capture.ragged, width = regions.block_width(buf, region) }
+    or nil
   prompt(buf, region, current.capture.visual, shape)
 end
 
@@ -406,8 +455,18 @@ function M.setup_autocmds()
     -- both fire *before* the operator function runs -- disarming there would
     -- turn a fresh `g!` into a silent repeat (F1).
     pattern = "no*:n",
-    callback = disarm,
+    callback = function()
+      disarm()
+      restore_virtualedit()
+    end,
   })
+  if FORCED_BLOCK_IN_MARKS then
+    api.nvim_create_autocmd("ModeChanged", {
+      group = group,
+      pattern = "no*:no" .. regions.BLOCK,
+      callback = widen_virtualedit,
+    })
+  end
 end
 
 return M
