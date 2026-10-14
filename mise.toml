@@ -6,7 +6,7 @@ actionlint = "1.7.12"
 dprint = "0.57.4"
 git-cliff = "2.14.1"
 prek = "0.5.3"
-stylua = "2.5.2"
+stylua = "2.6.0"
 
 [tasks.test]
 description = "Run the mini.test suite headless (exit 1 on any failure)"
