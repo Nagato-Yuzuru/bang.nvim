@@ -1,16 +1,18 @@
 {
   "$schema": "https://docs.renovatebot.com/renovate-schema.json",
-  "extends": ["config:best-practices"],
+  "extends": ["config:best-practices", "schedule:weekly"],
   "description": [
     "config:recommended ignores **/tests/**; the mini.nvim pin lives in tests/minimal_init.lua, so nothing is ignored here.",
+    "Updates come once a week in one group, so bot commits do not bury the commit history. Vulnerability fixes ignore the schedule (Renovate default).",
     "minimumReleaseAge holds each release for 7 days, so a compromised release has time to be found and pulled before CI runs it. Vulnerability fixes skip this wait (Renovate default)."
   ],
   "ignorePaths": [],
   "minimumReleaseAge": "7 days",
   "packageRules": [
     {
-      "description": "Merge non-major updates when the required checks pass. Every dependency here is CI or dev tooling, so no update reaches users of the plugin. digest is excluded: for github-tags, a force-pushed tag ages against its original release date, so it passes minimumReleaseAge at once.",
+      "description": "Merge non-major updates when the required checks pass. Every dependency here is CI or dev tooling, so no update reaches users of the plugin. digest is excluded: for github-tags, a force-pushed tag ages against its original release date, so it passes minimumReleaseAge at once. pinDigest stays: it pins the commit that CI already runs, so no new code comes in.",
       "matchUpdateTypes": ["minor", "patch", "pin", "pinDigest"],
+      "groupName": "non-major dependencies",
       "automerge": true
     }
   ],
