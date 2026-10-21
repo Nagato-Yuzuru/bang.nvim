@@ -10,7 +10,7 @@
   "minimumReleaseAge": "7 days",
   "packageRules": [
     {
-      "description": "Merge non-major updates when the required checks pass. Every dependency here is CI or dev tooling, so no update reaches users of the plugin. digest is excluded: for github-tags, a force-pushed tag ages against its original release date, so it passes minimumReleaseAge at once.",
+      "description": "Merge non-major updates when the required checks pass. Every dependency here is CI or dev tooling, so no update reaches users of the plugin. digest is excluded: for github-tags, a force-pushed tag ages against its original release date, so it passes minimumReleaseAge at once. pinDigest stays: it pins the commit that CI already runs, so no new code comes in.",
       "matchUpdateTypes": ["minor", "patch", "pin", "pinDigest"],
       "groupName": "non-major dependencies",
       "automerge": true
