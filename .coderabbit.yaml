@@ -13,3 +13,7 @@ reviews:
     # selene is this repo's Lua linter; luacheck would only add noise about the vim global.
     luacheck:
       enabled: false
+  auto_review:
+    # Renovate PRs only change versions, and the required checks gate their merge.
+    ignore_usernames:
+      - renovate[bot]

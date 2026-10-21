@@ -2,9 +2,21 @@
   "$schema": "https://docs.renovatebot.com/renovate-schema.json",
   "extends": ["config:best-practices"],
   "description": [
-    "config:recommended ignores **/tests/**; the mini.nvim pin lives in tests/minimal_init.lua, so nothing is ignored here."
+    "config:recommended ignores **/tests/**; the mini.nvim pin lives in tests/minimal_init.lua, so nothing is ignored here.",
+    "minimumReleaseAge holds each release for 7 days, so a compromised release has time to be found and pulled before CI runs it. Vulnerability fixes skip this wait (Renovate default)."
   ],
   "ignorePaths": [],
+  "minimumReleaseAge": "7 days",
+  "packageRules": [
+    {
+      "description": "Merge non-major updates when the required checks pass. Every dependency here is CI or dev tooling, so no update reaches users of the plugin.",
+      "matchUpdateTypes": ["minor", "patch", "pin", "digest", "pinDigest"],
+      "automerge": true
+    }
+  ],
+  "vulnerabilityAlerts": {
+    "automerge": true
+  },
   "customManagers": [
     {
       "customType": "regex",
