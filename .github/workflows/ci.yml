@@ -73,12 +73,13 @@ jobs:
         with:
           name: result-${{ matrix.neovim }}
           path: result/
+          if-no-files-found: error
 
   # The README badge reads neovim.json from the orphan `badges` branch. Only
-  # scheduled and manually dispatched runs on main write it.
+  # the daily run on main writes it, so the badge shows the last daily result.
   badges:
     needs: test
-    if: always() && github.ref == 'refs/heads/main' && (github.event_name == 'schedule' || github.event_name == 'workflow_dispatch')
+    if: "!cancelled() && github.ref == 'refs/heads/main' && (github.event_name == 'schedule' || github.event_name == 'workflow_dispatch')"
     runs-on: ubuntu-latest
     timeout-minutes: 5
     permissions:
@@ -90,22 +91,22 @@ jobs:
           merge-multiple: true
           path: result
       # A shields.io endpoint file: the versions in order, a failed one
-      # marked, red when any failed.
-      - run: |
-          for result in v0.11.0 stable nightly; do
-            if [ ! -f "result/$result.json" ]; then
-              echo "Missing result/$result.json" >&2
-              exit 1
-            fi
-          done
+      # marked, red when any failed. A failed upload fails its test job but
+      # leaves no result here, so a failed `test` with only passing results
+      # means a version is missing: publish nothing rather than a green badge.
+      - env:
+          TESTS: ${{ needs.test.result }}
+        run: |
           mkdir badges
-          jq -s '{
-            schemaVersion: 1,
-            label: "Neovim",
-            message: (sort_by(.version | [scan("[0-9]+") | tonumber])
-              | map(.version + (if .ok then "" else " ✗" end)) | join(" · ")),
-            color: (if all(.ok) then "brightgreen" else "red" end)
-          }' result/*.json > badges/neovim.json
+          jq -s --arg tests "$TESTS" '
+            if all(.ok) and $tests != "success" then error("a test result is missing") else . end
+            | {
+              schemaVersion: 1,
+              label: "Neovim",
+              message: (sort_by(.version | [scan("[0-9]+") | tonumber])
+                | map(.version + (if .ok then "" else " ✗" end)) | join(" · ")),
+              color: (if all(.ok) then "brightgreen" else "red" end)
+            }' result/*.json > badges/neovim.json
       # One commit, force-pushed, so the branch does not grow every day.
       - working-directory: badges
         env:
