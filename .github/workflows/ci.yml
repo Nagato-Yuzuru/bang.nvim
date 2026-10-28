@@ -58,17 +58,23 @@ jobs:
           key: deps-${{ hashFiles('tests/minimal_init.lua') }}
       - id: test
         run: mise run test
-      # The version that ran, so "stable" and "nightly" show as their numbers.
+      # A release shows as the minor version that ran, so "stable" shows as
+      # its number. Nightly shows as "nightly".
       - name: Record the result for the badge
         if: always()
         env:
           OUTCOME: ${{ steps.test.outcome }}
           KEY: ${{ matrix.neovim }}
         run: |
-          version=$(nvim --version 2>/dev/null | head -n 1 | grep -oE 'v[0-9]+\.[0-9]+\.[0-9]+(-dev)?' || echo "$KEY")
+          if [ "$KEY" = nightly ]; then
+            name=nightly
+          else
+            name=$(nvim --version 2>/dev/null | head -n 1 | grep -oE 'v[0-9]+\.[0-9]+' || echo "$KEY")
+            name=${name#v}
+          fi
           mkdir -p result
-          jq -n --arg version "${version#v}" --arg outcome "$OUTCOME" \
-            '{$version, ok: ($outcome == "success")}' > "result/$KEY.json"
+          jq -n --arg name "$name" --arg outcome "$OUTCOME" \
+            '{$name, ok: ($outcome == "success")}' > "result/$KEY.json"
       - if: always()
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
@@ -91,10 +97,11 @@ jobs:
           pattern: result-*
           merge-multiple: true
           path: result
-      # A shields.io endpoint file: the versions in order, a failed one
-      # marked, red when any failed. A failed upload fails its test job but
-      # leaves no result here, so a failed `test` with only passing results
-      # means a version is missing: publish nothing rather than a green badge.
+      # A shields.io endpoint file: the range from the oldest to the newest
+      # release, then nightly. A failed one is marked, and the badge is red
+      # when any failed. A failed upload fails its test job but leaves no
+      # result here, so a failed `test` with only passing results means a
+      # version is missing: publish nothing rather than a green badge.
       - env:
           TESTS: ${{ needs.test.result }}
         run: |
@@ -104,8 +111,15 @@ jobs:
             | {
               schemaVersion: 1,
               label: "Neovim",
-              message: (sort_by(.version | [scan("[0-9]+") | tonumber])
-                | map(.version + (if .ok then "" else " ✗" end)) | join(" · ")),
+              message: (
+                def mark: .name + (if .ok then "" else " ✗" end);
+                [ (map(select(.name != "nightly"))
+                    | group_by(.name) | map({name: .[0].name, ok: all(.[]; .ok)})
+                    | sort_by(.name | [scan("[0-9]+") | tonumber])
+                    | if length > 1 then [first, last] else . end
+                    | map(mark) | join(" – ")) ]
+                + map(select(.name == "nightly") | mark)
+                | join(" · ")),
               color: (if all(.ok) then "brightgreen" else "red" end)
             }' result/*.json > badges/neovim.json
       # One commit, force-pushed, so the branch does not grow every day.
