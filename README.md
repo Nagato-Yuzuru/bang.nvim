@@ -16,9 +16,9 @@ alone. Everywhere else it behaves as the built-in filter does, and
 
 ## Install
 
-Neovim 0.11 or newer, on a Unix-like system. The Neovim badge lists the
-versions that the last daily CI run tested: the oldest supported release, the
-latest stable release and nightly. Windows support is in progress
+Neovim 0.11 or newer, on a Unix-like system. The Neovim badge shows the
+result of the last daily CI run on the oldest supported release, the latest
+stable release and nightly. Windows support is in progress
 ([#20](https://github.com/Nagato-Yuzuru/bang.nvim/issues/20)): `'shellquote'`
 and `'shellxquote'` are still ignored.
 
