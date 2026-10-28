@@ -75,7 +75,7 @@ jobs:
           path: result/
 
   # The README badge reads neovim.json from the orphan `badges` branch. Only
-  # the daily run on main writes it, so the badge shows the last daily result.
+  # scheduled and manually dispatched runs on main write it.
   badges:
     needs: test
     if: always() && github.ref == 'refs/heads/main' && (github.event_name == 'schedule' || github.event_name == 'workflow_dispatch')
@@ -92,6 +92,12 @@ jobs:
       # A shields.io endpoint file: the versions in order, a failed one
       # marked, red when any failed.
       - run: |
+          for result in v0.11.0 stable nightly; do
+            if [ ! -f "result/$result.json" ]; then
+              echo "Missing result/$result.json" >&2
+              exit 1
+            fi
+          done
           mkdir badges
           jq -s '{
             schemaVersion: 1,
