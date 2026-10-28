@@ -1,7 +1,7 @@
 # bang.nvim
 
 [![CI](https://img.shields.io/github/actions/workflow/status/Nagato-Yuzuru/bang.nvim/ci.yml?branch=main&label=CI&style=flat-square&labelColor=282a36)](https://github.com/Nagato-Yuzuru/bang.nvim/actions/workflows/ci.yml)
-[![Neovim 0.11+](https://img.shields.io/badge/Neovim-0.11%2B-bd93f9?logo=neovim&logoColor=white&style=flat-square&labelColor=282a36)](https://neovim.io)
+[![Neovim](https://img.shields.io/endpoint?url=https%3A%2F%2Fraw.githubusercontent.com%2FNagato-Yuzuru%2Fbang.nvim%2Fbadges%2Fneovim.json&logo=neovim&logoColor=white&style=flat-square&labelColor=282a36)](https://github.com/Nagato-Yuzuru/bang.nvim/actions/workflows/ci.yml?query=event%3Aschedule)
 [![MIT](https://img.shields.io/github/license/Nagato-Yuzuru/bang.nvim?style=flat-square&labelColor=282a36&color=ff79c6)](LICENSE)
 
 Pipe a selection, motion, or text object through a shell command.
@@ -16,7 +16,9 @@ alone. Everywhere else it behaves as the built-in filter does, and
 
 ## Install
 
-Neovim 0.11 or newer, on a Unix-like system. Windows support is in progress
+Neovim 0.11 or newer, on a Unix-like system. The Neovim badge lists the
+versions that the last daily CI run tested: the oldest supported release, the
+latest stable release and nightly. Windows support is in progress
 ([#20](https://github.com/Nagato-Yuzuru/bang.nvim/issues/20)): `'shellquote'`
 and `'shellxquote'` are still ignored.
 

@@ -55,4 +55,59 @@ jobs:
         with:
           path: .deps
           key: deps-${{ hashFiles('tests/minimal_init.lua') }}
-      - run: mise run test
+      - id: test
+        run: mise run test
+      # The version that ran, so "stable" and "nightly" show as their numbers.
+      - name: Record the result for the badge
+        if: always()
+        env:
+          OUTCOME: ${{ steps.test.outcome }}
+          KEY: ${{ matrix.neovim }}
+        run: |
+          version=$(nvim --version 2>/dev/null | head -n 1 | grep -oE 'v[0-9]+\.[0-9]+\.[0-9]+(-dev)?' || echo "$KEY")
+          mkdir -p result
+          jq -n --arg version "${version#v}" --arg outcome "$OUTCOME" \
+            '{$version, ok: ($outcome == "success")}' > "result/$KEY.json"
+      - if: always()
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: result-${{ matrix.neovim }}
+          path: result/
+
+  # The README badge reads neovim.json from the orphan `badges` branch. Only
+  # the daily run on main writes it, so the badge shows the last daily result.
+  badges:
+    needs: test
+    if: always() && github.ref == 'refs/heads/main' && (github.event_name == 'schedule' || github.event_name == 'workflow_dispatch')
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          pattern: result-*
+          merge-multiple: true
+          path: result
+      # A shields.io endpoint file: the versions in order, a failed one
+      # marked, red when any failed.
+      - run: |
+          mkdir badges
+          jq -s '{
+            schemaVersion: 1,
+            label: "Neovim",
+            message: (sort_by(.version | [scan("[0-9]+") | tonumber])
+              | map(.version + (if .ok then "" else " ✗" end)) | join(" · ")),
+            color: (if all(.ok) then "brightgreen" else "red" end)
+          }' result/*.json > badges/neovim.json
+      # One commit, force-pushed, so the branch does not grow every day.
+      - working-directory: badges
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          git init -q -b badges
+          git add .
+          git -c user.name='github-actions[bot]' \
+            -c user.email='41898282+github-actions[bot]@users.noreply.github.com' \
+            commit -q -m "chore: version badge from run $GITHUB_RUN_ID"
+          git push --force "https://x-access-token:$GH_TOKEN@github.com/$GITHUB_REPOSITORY" badges
