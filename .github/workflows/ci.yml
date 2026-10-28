@@ -36,9 +36,10 @@ jobs:
     name: test (Neovim ${{ matrix.neovim }})
     runs-on: ubuntu-latest
     timeout-minutes: 10
-    # On a pull request nightly reports but never blocks; on the daily run a
-    # nightly failure fails the run, which is what sends the notification.
-    continue-on-error: ${{ matrix.neovim == 'nightly' && github.event_name != 'schedule' }}
+    # On a pull request or a push nightly reports but never blocks. On the
+    # daily or a manual run a nightly failure fails the run: that sends the
+    # notification, and the `badges` job needs it to see a missing result.
+    continue-on-error: ${{ matrix.neovim == 'nightly' && github.event_name != 'schedule' && github.event_name != 'workflow_dispatch' }}
     strategy:
       fail-fast: false
       matrix:
