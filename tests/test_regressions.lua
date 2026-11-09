@@ -135,4 +135,48 @@ T["timeout_pipeline_leaves_child_holding_pipe"] = function()
   )
 end
 
+-- `SystemObj:wait()` stops a process differently in each Neovim version: up
+-- to 0.12 it waited for the pipes a second time after the stop, so a Ctrl-C
+-- hung for up to `timeout` ms; from 0.13 a timeout ends in signal 15, which
+-- bang reported as "killed by signal 15". bang stops the command itself now.
+
+T["exit_124_is_not_a_timeout"] = function()
+  -- 124 is the code `wait()` gives a stopped process. A command that exits
+  -- with 124 by itself is an ordinary failure.
+  H.setup(child, { timeout = 10000 })
+  H.set_lines(child, { "one" })
+  local res = H.run(child, "exit 124", H.linewise(1, 1))
+  eq(res.ok, false)
+  eq(res.msg:lower():find("timed out", 1, true), nil)
+  neq(res.msg:find("124", 1, true), nil)
+  eq(H.get_lines(child), { "one" })
+end
+
+T["interrupt_kills_the_pipeline_at_once"] = function()
+  -- A Ctrl-C cannot be sent headless (see D6.2 in test_engine.lua), so
+  -- `vim.wait()` reports one: -2 is its result for a Ctrl-C.
+  child.lua([[
+    local wait = vim.wait
+    vim.wait = function(...)
+      vim.wait = wait
+      wait(100)
+      return false, -2
+    end
+  ]])
+  H.setup(child, { timeout = 10000 })
+  H.set_lines(child, { "one" })
+  local started = vim.uv.hrtime()
+  local res = H.run(child, "sleep 33 | cat", H.linewise(1, 1))
+  local elapsed = (vim.uv.hrtime() - started) / 1e6
+  eq(res.ok, false)
+  neq(res.msg:lower():find("interrupted", 1, true), nil)
+  eq(H.get_lines(child), { "one" })
+  eq(elapsed < 5000, true, { fail_reason = "the interrupt waited for the pipeline" })
+  eq(
+    vim.fn.system({ "pgrep", "-f", "sleep 33" }),
+    "",
+    { fail_reason = "the pipeline outlived the interrupt" }
+  )
+end
+
 return T
