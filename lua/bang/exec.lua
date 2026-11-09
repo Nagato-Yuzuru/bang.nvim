@@ -138,19 +138,23 @@ function M.argv(cmd)
 end
 
 ---Run `cmd` with `stdin` on its standard input and wait for it.
----A timeout and a Ctrl-C both end as SIGKILL with exit code 124 (D6.2); the
----elapsed time is what tells them apart.
 ---
----The command gets its own process group (`detach`) so that a timeout can kill
----the whole pipeline. `wait()` kills only the shell; a child the shell forked --
----every pipeline, and on dash even a lone command -- would keep stdout open and
----hold the result back, so `wait()` returned nil (CI-1).
+---bang stops the command itself and does not use `SystemObj:wait()`: how
+---`wait()` stops a process, and what it returns after a timeout or a Ctrl-C,
+---differ between Neovim versions. `vim.wait()` returns -1 on a timeout and -2
+---on a Ctrl-C (D6.2) in every version.
+---
+---The command gets its own process group (`detach`), and a stop kills the
+---whole group. A child the shell forked -- every pipeline, and on dash even a
+---lone command -- would otherwise keep running and keep stdout open (CI-1).
 ---@param cmd string
 ---@param stdin string
 ---@param timeout integer Milliseconds.
 ---@return bang.ExecResult|nil result, string|nil error
 function M.run(cmd, stdin, timeout)
   local started = vim.uv.hrtime()
+  ---@type vim.SystemCompleted|nil
+  local result
   local ok, proc = pcall(vim.system, M.argv(cmd), {
     stdin = stdin,
     -- Raw bytes: `text = true` would turn every `\r\n` into `\n` before the
@@ -159,7 +163,9 @@ function M.run(cmd, stdin, timeout)
     text = false,
     cwd = vim.fn.getcwd(),
     detach = true,
-  })
+  }, function(completed)
+    result = completed
+  end)
   if not ok then
     -- `vim.system` raises with its own source location in front of the errno
     -- text; the location is not the user's (#49).
@@ -167,21 +173,20 @@ function M.run(cmd, stdin, timeout)
     return nil, ("bang: could not run %s: %s"):format(vim.o.shell, reason)
   end
 
-  local result = proc:wait(timeout)
-  if result == nil then
-    -- The shell is dead, but a child of it still holds the pipes.
+  local done, why = vim.wait(timeout, function()
+    return result ~= nil
+  end, nil, true)
+  if not done then
+    -- No wait for the exit: a process that left the group could hold the
+    -- pipes open for ever, and the result is not used.
     pcall(vim.uv.kill, -proc.pid, "sigkill")
-    result = proc:wait(timeout)
-  end
-  local elapsed = (vim.uv.hrtime() - started) / 1e6
-
-  if result == nil or (result.code == 124 and result.signal == 9) then
-    if elapsed >= timeout * 0.9 then
-      return nil, ("bang: command timed out after %d ms, nothing was replaced"):format(timeout)
+    if why == -2 then
+      local elapsed = math.floor((vim.uv.hrtime() - started) / 1e6)
+      return nil, ("bang: command interrupted after %d ms, nothing was replaced"):format(elapsed)
     end
-    return nil,
-      ("bang: command interrupted after %d ms, nothing was replaced"):format(math.floor(elapsed))
+    return nil, ("bang: command timed out after %d ms, nothing was replaced"):format(timeout)
   end
+  ---@cast result vim.SystemCompleted
   -- A child killed by a signal reports code 0, so its empty output would
   -- otherwise look like a successful run that deletes the region (R4).
   if result.signal ~= 0 then
