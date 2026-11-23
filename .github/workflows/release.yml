@@ -17,7 +17,7 @@ jobs:
           # git-cliff walks the history back to the previous tag.
           fetch-depth: 0
           fetch-tags: true
-      - uses: jdx/mise-action@b44d12e7d0d8ee7461bb893e1b1993500433185b # v5.2.7
+      - uses: jdx/mise-action@236a21c3b91f5db6d4e174b348674a0f0caac06d # v5.2.9
       # The notes come from the commit subjects, grouped by cliff.toml, as a
       # draft: read, edit and publish by hand.
       - run: git cliff --latest --output notes.md
